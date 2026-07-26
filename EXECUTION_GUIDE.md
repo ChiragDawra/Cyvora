@@ -17,6 +17,7 @@ Check off tasks as you finish them. Don't skip ahead to v2/v3 until v1's Definit
 ## Progress log
 
 - **2026-07-26:** Phase 0 repo scaffolding done — folder structure, Python Lambda stubs (ingestion + backend, untested against real feeds/AWS), Next.js frontend (builds clean, placeholder data only), Terraform skeleton (S3 + DynamoDB + Budgets alarm defined but **not applied** — no AWS account/credentials configured in this environment), GitHub Actions CI skeleton (lint/build/`terraform validate`, no deploy job yet). **Nothing is deployed. No feed API keys are registered yet.** Phase 1's actual checklist items below are still open — see each item's TODO comments in the corresponding source file for exactly what's stubbed vs. real.
+- **2026-07-26 (later):** Verified CISA KEV and Feodo Tracker field names against live feed responses and fixed a real bug in the normalizer (Feodo's last-seen field is `last_online`, not `last_seen` — the code previously silently produced empty strings for every record). Added a pytest suite (`ingestion/tests/`, 8 tests, all passing) covering the schema and all three parsers, wired into CI. URLhaus's response wrapper is still unconfirmed — no Auth-Key exists yet to test against the live endpoint. **Still blocked on the same things:** AWS account, abuse.ch Auth-Key, AbuseIPDB key — none of this is deployed or connected to a real feed yet.
 
 ---
 
@@ -43,7 +44,7 @@ Do this before writing any feature code.
 
 ### Ingestion & storage
 - [ ] One **EventBridge Scheduler → Lambda (Python)** per feed, matched to that feed's update cadence *(Lambda code written, no EventBridge schedule or actual deployment yet — that's Terraform work still to add per `infra/README.md`)*
-- [ ] Raw pulls land in **S3**; a normalization Lambda maps each feed's format into one common IOC schema *(`ingestion/normalizer/handler.py` written against best-effort field names — verify against real feed payloads before trusting it)*
+- [ ] Raw pulls land in **S3**; a normalization Lambda maps each feed's format into one common IOC schema *(`ingestion/normalizer/handler.py` — CISA KEV and Feodo Tracker field names confirmed against live feed responses 2026-07-26 (fixed a real bug: Feodo's "last seen" field is `last_online`, not `last_seen`); URLhaus field names confirmed via abuse.ch docs but its `{"urls": [...]}` wrapper is still inferred by convention, unconfirmed — needs a real Auth-Key to verify. Covered by unit tests in `ingestion/tests/`, run via `pytest` in `ingestion/`)*
 - [ ] **DynamoDB** as the current IOC/alert store, with GSIs on time and geo (stays inside the always-free 25GB tier) *(table + time GSI defined in `infra/dynamodb.tf`, not yet applied; geo GSI deferred — needs a geohash scheme, not a native DynamoDB feature)*
 - [ ] S3 + Athena for historical/append-only records (skip AWS Timestream — closed to new customers since June 2025; use Timestream for InfluxDB or Postgres/RDS if you need real time-series queries later)
 
