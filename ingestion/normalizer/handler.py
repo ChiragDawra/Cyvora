@@ -1,10 +1,15 @@
 """Triggered by S3 PUT events on the landing bucket. Parses whichever feed landed the
 object and writes normalized IOC records into the DynamoDB IOC table.
 
-TODO before first real run: fill in `_parse_urlhaus`, `_parse_feodo`, and
-`_parse_cisa_kev` against real sample payloads from each feed — the field names below
-are best-effort based on each feed's documented schema, not verified against a live
-response yet.
+Field names verified 2026-07-26:
+- `_parse_cisa_kev`: confirmed exact against a live fetch of the real KEV feed.
+- `_parse_feodo`: confirmed exact against a live fetch of the real ipblocklist.json
+  (top-level array; note the "last seen" field is `last_online`, not `last_seen`).
+- `_parse_urlhaus`: field names (`url`, `date_added`, `tags`, `last_online`) confirmed
+  against abuse.ch's own integration docs, but the top-level `{"urls": [...]}` wrapper
+  is inferred by convention from other abuse.ch bulk endpoints, not confirmed against a
+  live authenticated response (requires a real Auth-Key to test) — verify this once a
+  key is registered, per EXECUTION_GUIDE.md.
 """
 from __future__ import annotations
 
@@ -29,7 +34,7 @@ def _parse_urlhaus(raw: dict) -> list[IOC]:
                 value=entry["url"],
                 source_feed="urlhaus",
                 first_seen=entry.get("date_added", ""),
-                last_seen=entry.get("date_added", ""),
+                last_seen=entry.get("last_online") or entry.get("date_added", ""),
                 tags=entry.get("tags", []) or [],
                 raw=entry,
             )
@@ -46,7 +51,7 @@ def _parse_feodo(raw: list[dict]) -> list[IOC]:
                 value=entry["ip_address"],
                 source_feed="feodo",
                 first_seen=entry.get("first_seen", ""),
-                last_seen=entry.get("last_seen", ""),
+                last_seen=entry.get("last_online", ""),
                 tags=[entry["malware"]] if entry.get("malware") else [],
                 raw=entry,
             )
