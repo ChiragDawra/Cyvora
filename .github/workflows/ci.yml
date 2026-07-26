@@ -17,12 +17,15 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: |
-          pip install -r ingestion/requirements.txt
+          pip install -r ingestion/requirements-dev.txt
           pip install -r backend/requirements.txt
       - name: Compile check
         run: |
           python -m compileall ingestion backend
-      # TODO: add `pytest` once ingestion/backend have tests (see EXECUTION_GUIDE.md Phase 1)
+      - name: Test (ingestion)
+        working-directory: ingestion
+        run: python -m pytest -q
+      # TODO: add backend/ tests once backend/api/handler.py has a moto-mocked DynamoDB test
 
   frontend:
     name: Frontend (Next.js)
