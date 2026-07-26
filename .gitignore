@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json
+
 # Environment / secrets
 .env
 .env.*
@@ -22,3 +25,4 @@ venv/
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+terraform.tfvars
