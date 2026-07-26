@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python:
+    name: Python (ingestion + backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r ingestion/requirements.txt
+          pip install -r backend/requirements.txt
+      - name: Compile check
+        run: |
+          python -m compileall ingestion backend
+      # TODO: add `pytest` once ingestion/backend have tests (see EXECUTION_GUIDE.md Phase 1)
+
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  terraform:
+    name: Terraform (fmt + validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+      - name: Format check
+        working-directory: infra
+        run: terraform fmt -check -recursive
+      - name: Init (no backend, no state)
+        working-directory: infra
+        run: terraform init -backend=false
+      - name: Validate
+        working-directory: infra
+        run: terraform validate
+
+  # TODO (Phase 1, once infra/lambda.tf etc. exist and AWS OIDC role is set up):
+  # add a `deploy` job gated on `github.ref == 'refs/heads/main'` that runs
+  # `terraform apply` and syncs the built frontend to S3/CloudFront.
