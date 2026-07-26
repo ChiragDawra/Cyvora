@@ -14,43 +14,47 @@ This is the single live source of truth for building Cyvora. `GPT_Analysis.md` a
 
 Check off tasks as you finish them. Don't skip ahead to v2/v3 until v1's Definition of Done is fully checked. When in doubt about a decision, this file's "Open assumptions" section below tells you what's been assumed on your behalf and can still be changed before you start.
 
+## Progress log
+
+- **2026-07-26:** Phase 0 repo scaffolding done — folder structure, Python Lambda stubs (ingestion + backend, untested against real feeds/AWS), Next.js frontend (builds clean, placeholder data only), Terraform skeleton (S3 + DynamoDB + Budgets alarm defined but **not applied** — no AWS account/credentials configured in this environment), GitHub Actions CI skeleton (lint/build/`terraform validate`, no deploy job yet). **Nothing is deployed. No feed API keys are registered yet.** Phase 1's actual checklist items below are still open — see each item's TODO comments in the corresponding source file for exactly what's stubbed vs. real.
+
 ---
 
 ## Phase 0 — Repo & environment setup
 
 Do this before writing any feature code.
 
-- [ ] Confirm `.gitignore` is in place (see this repo's `.gitignore`) and stop tracking `.DS_Store`
-- [ ] Choose runtimes: **Python** for ingestion/normalization Lambdas and any ML code, **Node.js + React/Next.js** for the frontend
-- [ ] Create an AWS account (or confirm you have one) and set a **AWS Budgets alarm** immediately — before provisioning anything else
-- [ ] Decide secrets handling: local `.env` (gitignored) for dev, **AWS SSM Parameter Store or Secrets Manager** for deployed Lambdas
-- [ ] Pick IaC tool: **Terraform** (see "Open assumptions" below if you'd rather use CDK/CloudFormation)
-- [ ] Scaffold repo folders: `/infra` (Terraform), `/ingestion` (feed-pull Lambdas), `/backend` (API Lambda), `/frontend` (React/Next.js app)
-- [ ] Set up GitHub Actions CI skeleton (lint/test on push, deploy on merge to main) — can be a no-op pipeline initially, filled in during Phase 1
+- [x] Confirm `.gitignore` is in place and stop tracking `.DS_Store`
+- [x] Choose runtimes: **Python** for ingestion/normalization Lambdas and any ML code, **Node.js + React/Next.js** for the frontend
+- [ ] Create an AWS account (or confirm you have one) and set a **AWS Budgets alarm** immediately — before provisioning anything else *(needs you — no AWS account/CLI configured in this dev environment; `infra/budgets.tf` is written and ready to apply once you have credentials)*
+- [ ] Decide secrets handling: local `.env` (gitignored) for dev, **AWS SSM Parameter Store or Secrets Manager** for deployed Lambdas *(approach decided, nothing wired up yet — no real keys exist)*
+- [x] Pick IaC tool: **Terraform** (see "Open assumptions" below if you'd rather use CDK/CloudFormation)
+- [x] Scaffold repo folders: `/infra` (Terraform), `/ingestion` (feed-pull Lambdas), `/backend` (API Lambda), `/frontend` (React/Next.js app)
+- [x] Set up GitHub Actions CI skeleton (lint/build/`terraform validate` on push — no deploy job yet, that needs Phase 1's Lambda packaging + AWS OIDC role first)
 
 ## Phase 1 — v1 MVP (the freeze target)
 
 **No ML in this phase.** Goal: a live, deployed, IaC-managed pipeline showing real threat data on a map.
 
 ### Feeds (exactly these 3 — do not add more in v1)
-- [ ] Register an **abuse.ch Auth-Key** (mandatory since June 2025) and pull **URLhaus** + **Feodo Tracker**
-- [ ] Integrate **CISA KEV** feed (free, no key, no auth — highest-value/lowest-friction feed, do this one first)
-- [ ] Register an **AbuseIPDB** free-tier key (1,000 checks/day) and use it to enrich a *filtered subset* of IOCs only — never bulk-enrich through a rate-limited endpoint
+- [ ] Register an **abuse.ch Auth-Key** (mandatory since June 2025) and pull **URLhaus** + **Feodo Tracker** *(needs you — real account signup; handler code stubbed in `ingestion/urlhaus/` + `ingestion/feodo/`, untested against the live API)*
+- [ ] Integrate **CISA KEV** feed (free, no key, no auth — highest-value/lowest-friction feed, do this one first) *(handler stubbed in `ingestion/cisa_kev/`, untested)*
+- [ ] Register an **AbuseIPDB** free-tier key (1,000 checks/day) and use it to enrich a *filtered subset* of IOCs only — never bulk-enrich through a rate-limited endpoint *(needs you — real account signup; handler stubbed in `ingestion/abuseipdb_enrich/`, `_get_unenriched_ips` still a placeholder)*
 
 ### Ingestion & storage
-- [ ] One **EventBridge Scheduler → Lambda (Python)** per feed, matched to that feed's update cadence
-- [ ] Raw pulls land in **S3**; a normalization Lambda maps each feed's format into one common IOC schema
-- [ ] **DynamoDB** as the current IOC/alert store, with GSIs on time and geo (stays inside the always-free 25GB tier)
+- [ ] One **EventBridge Scheduler → Lambda (Python)** per feed, matched to that feed's update cadence *(Lambda code written, no EventBridge schedule or actual deployment yet — that's Terraform work still to add per `infra/README.md`)*
+- [ ] Raw pulls land in **S3**; a normalization Lambda maps each feed's format into one common IOC schema *(`ingestion/normalizer/handler.py` written against best-effort field names — verify against real feed payloads before trusting it)*
+- [ ] **DynamoDB** as the current IOC/alert store, with GSIs on time and geo (stays inside the always-free 25GB tier) *(table + time GSI defined in `infra/dynamodb.tf`, not yet applied; geo GSI deferred — needs a geohash scheme, not a native DynamoDB feature)*
 - [ ] S3 + Athena for historical/append-only records (skip AWS Timestream — closed to new customers since June 2025; use Timestream for InfluxDB or Postgres/RDS if you need real time-series queries later)
 
 ### Backend & frontend
-- [ ] **API Gateway + Lambda** backend serving IOC/alert data
-- [ ] **React/Next.js** frontend, globe view via **globe.gl / react-globe.gl**, with a **2D map fallback (Leaflet or deck.gl)**
+- [ ] **API Gateway + Lambda** backend serving IOC/alert data *(`backend/api/handler.py` stubbed, uses a full table `scan` until the GSI-based query TODO is done — not deployed)*
+- [x] **React/Next.js** frontend, globe view via **globe.gl / react-globe.gl**, with a **2D map fallback (Leaflet)** — scaffolded and builds clean (`npm run build` passes) with placeholder points; not yet wired to the real API
 - [ ] Deploy frontend via **S3 + CloudFront**
 
 ### Infra & ops
-- [ ] All infra defined in **Terraform**, applied via CI
-- [ ] **GitHub Actions** CI/CD: lint/test → terraform plan → terraform apply on merge
+- [ ] All infra defined in **Terraform**, applied via CI *(S3/DynamoDB/Budgets defined in `infra/`, not applied — Lambda/API Gateway/EventBridge/CloudFront still to add)*
+- [x] **GitHub Actions** CI/CD: lint/build/`terraform validate` wired up (`.github/workflows/ci.yml`) — `terraform apply`/deploy step still to add once there's something real to deploy
 - [ ] **CloudWatch** dashboards + alarms for Lambda errors/latency
 - [ ] Confirm the **AWS Budgets alarm** from Phase 0 is actually active
 
