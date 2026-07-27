@@ -52,9 +52,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build Lambda layer (smoke test - lambda.tf's archive_file needs this directory)
+        run: ./ingestion/build_layer.sh
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.0"
+          terraform_version: "1.15.8"
       - name: Format check
         working-directory: infra
         run: terraform fmt -check -recursive
@@ -64,7 +69,10 @@ jobs:
       - name: Validate
         working-directory: infra
         run: terraform validate
+      # `terraform plan`/`apply` need real AWS credentials and are deliberately not run
+      # here yet - no AWS OIDC role or secrets are configured for this repo. Applies are
+      # run manually via infra/run.sh until that's set up. See EXECUTION_GUIDE.md.
 
-  # TODO (Phase 1, once infra/lambda.tf etc. exist and AWS OIDC role is set up):
-  # add a `deploy` job gated on `github.ref == 'refs/heads/main'` that runs
-  # `terraform apply` and syncs the built frontend to S3/CloudFront.
+  # TODO (once AWS OIDC role + GitHub secrets are set up): add a `deploy` job gated on
+  # github.ref == 'refs/heads/main' that runs `terraform apply` and syncs the built
+  # frontend to S3/CloudFront.
