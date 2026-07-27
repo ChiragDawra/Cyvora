@@ -21,3 +21,17 @@ variable "budget_alert_email" {
   type        = string
   # No default on purpose - must be supplied via terraform.tfvars (gitignored) or -var.
 }
+
+variable "abusech_auth_key" {
+  description = "abuse.ch Auth-Key (auth.abuse.ch), used by the urlhaus and feodo Lambdas"
+  type        = string
+  sensitive   = true
+  # No default - supply via TF_VAR_abusech_auth_key, e.g. through infra/run.sh.
+}
+
+variable "abuseipdb_api_key" {
+  description = "AbuseIPDB API key, used by the abuseipdb_enrich Lambda"
+  type        = string
+  sensitive   = true
+  # No default - supply via TF_VAR_abuseipdb_api_key, e.g. through infra/run.sh.
+}
