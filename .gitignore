@@ -27,5 +27,6 @@ venv/
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
 terraform.tfvars
+# NOTE: .terraform.lock.hcl is deliberately NOT ignored - Terraform recommends
+# committing it to pin provider versions across machines.
