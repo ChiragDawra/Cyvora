@@ -19,6 +19,7 @@ Check off tasks as you finish them. Don't skip ahead to v2/v3 until v1's Definit
 - **2026-07-26:** Phase 0 repo scaffolding done — folder structure, Python Lambda stubs (ingestion + backend, untested against real feeds/AWS), Next.js frontend (builds clean, placeholder data only), Terraform skeleton (S3 + DynamoDB + Budgets alarm defined but **not applied** — no AWS account/credentials configured in this environment), GitHub Actions CI skeleton (lint/build/`terraform validate`, no deploy job yet). **Nothing is deployed. No feed API keys are registered yet.** Phase 1's actual checklist items below are still open — see each item's TODO comments in the corresponding source file for exactly what's stubbed vs. real.
 - **2026-07-26 (later):** Verified CISA KEV and Feodo Tracker field names against live feed responses and fixed a real bug in the normalizer (Feodo's last-seen field is `last_online`, not `last_seen` — the code previously silently produced empty strings for every record). Added a pytest suite (`ingestion/tests/`, 8 tests, all passing) covering the schema and all three parsers, wired into CI. URLhaus's response wrapper is still unconfirmed — no Auth-Key exists yet to test against the live endpoint. **Still blocked on the same things:** AWS account, abuse.ch Auth-Key, AbuseIPDB key — none of this is deployed or connected to a real feed yet.
 - **2026-07-27:** Real abuse.ch Auth-Key and AbuseIPDB key registered and placed in a gitignored `.env` (fixed to the `ABUSECH_AUTH_KEY`/`ABUSEIPDB_API_KEY` names the code actually reads — the first draft used non-standard key names/format that wouldn't have loaded). Hit all 3 v1 feeds live: URLhaus's `{"query_status": ..., "urls": [...]}` wrapper is now **confirmed correct**, but that endpoint has no `last_online` field at all (only `date_added`) — fixed the normalizer, which had guessed a fallback for a field that doesn't exist there. Feodo and AbuseIPDB responses matched what was already coded, no changes needed. Also validated `_parse_cisa_kev` against the full real catalog (1,653 entries, 0 parse failures) using a local download. **Still blocked on:** AWS account/credentials — nothing is deployed yet; the feed *logic* is now proven against live data, but no Lambda, EventBridge schedule, or DynamoDB write has actually run.
+- **2026-07-27 (later):** AWS account created, IAM user `Cyvora-Terraform` set up with `AdministratorAccess` (not root — good), keys added to `.env`, confirmed working via `aws sts get-caller-identity`. Installed Terraform + AWS CLI locally (`brew install awscli` + `brew install hashicorp/tap/terraform` — plain `brew install terraform` no longer works, HashiCorp pulled it from homebrew-core). `terraform init`/`fmt`/`validate` all pass for the first time against the real provider. **First real AWS resource is live:** the Budgets alarm (`aws_budgets_budget.monthly`) — $5/month, 80% actual + 100% forecasted email alerts, verified via `aws budgets describe-budget` (status `HEALTHY`, `$0` spend so far). Note: the harness's own auto-mode classifier blocks `terraform apply` from running unattended, so applies need to be run by the user directly (interactively, with the `yes` prompt) rather than by me with `-auto-approve` — that's how this one landed. Same approach will apply to every subsequent `terraform apply` in this project.
 
 ---
 
@@ -28,7 +29,7 @@ Do this before writing any feature code.
 
 - [x] Confirm `.gitignore` is in place and stop tracking `.DS_Store`
 - [x] Choose runtimes: **Python** for ingestion/normalization Lambdas and any ML code, **Node.js + React/Next.js** for the frontend
-- [ ] Create an AWS account (or confirm you have one) and set a **AWS Budgets alarm** immediately — before provisioning anything else *(needs you — no AWS account/CLI configured in this dev environment; `infra/budgets.tf` is written and ready to apply once you have credentials)*
+- [x] Create an AWS account (or confirm you have one) and set a **AWS Budgets alarm** immediately — before provisioning anything else *(done — account + IAM user set up, Terraform + AWS CLI installed locally, `aws_budgets_budget.monthly` applied and confirmed live: $5/month, HEALTHY)*
 - [x] Decide secrets handling: local `.env` (gitignored) for dev — `.env` now has real `ABUSECH_AUTH_KEY`/`ABUSEIPDB_API_KEY`/`OTX_API_KEY` (confirmed gitignored, confirmed working). **AWS SSM Parameter Store or Secrets Manager** for deployed Lambdas is still just a decision, nothing wired up — no AWS account yet
 - [x] Pick IaC tool: **Terraform** (see "Open assumptions" below if you'd rather use CDK/CloudFormation)
 - [x] Scaffold repo folders: `/infra` (Terraform), `/ingestion` (feed-pull Lambdas), `/backend` (API Lambda), `/frontend` (React/Next.js app)
@@ -57,10 +58,10 @@ Do this before writing any feature code.
 - [ ] Deploy frontend via **S3 + CloudFront**
 
 ### Infra & ops
-- [ ] All infra defined in **Terraform**, applied via CI *(S3/DynamoDB/Budgets defined in `infra/`, not applied — Lambda/API Gateway/EventBridge/CloudFront still to add)*
+- [ ] All infra defined in **Terraform**, applied via CI *(Budgets alarm applied and live; S3/DynamoDB defined but not yet applied — Lambda/API Gateway/EventBridge/CloudFront still to add. Applies must be run by the user directly — the harness blocks `terraform apply -auto-approve` from running unattended)*
 - [x] **GitHub Actions** CI/CD: lint/build/`terraform validate` wired up (`.github/workflows/ci.yml`) — `terraform apply`/deploy step still to add once there's something real to deploy
 - [ ] **CloudWatch** dashboards + alarms for Lambda errors/latency
-- [ ] Confirm the **AWS Budgets alarm** from Phase 0 is actually active
+- [x] Confirm the **AWS Budgets alarm** from Phase 0 is actually active *(confirmed via `aws budgets describe-budget`: status HEALTHY, $5/month limit, $0 spend so far)*
 
 ### Definition of Done (v1)
 - [ ] All 3 feeds ingesting on schedule with visible, correctly-plotted data on the map
