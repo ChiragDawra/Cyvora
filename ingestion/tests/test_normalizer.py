@@ -1,10 +1,8 @@
 from common.schema import IOCType
 from normalizer.handler import _parse_cisa_kev, _parse_feodo, _parse_urlhaus
 
-# Fixtures below mirror real payload shapes confirmed 2026-07-26 (see
-# normalizer/handler.py's module docstring) - CISA KEV and Feodo Tracker were checked
-# against live feed responses; URLhaus's field names are from abuse.ch's own docs, but
-# the {"urls": [...]} wrapper is an inferred convention, not confirmed live.
+# Fixtures below mirror real, live-authenticated payload shapes confirmed 2026-07-26/27
+# (see normalizer/handler.py's module docstring) for all three feeds.
 
 CISA_KEV_RAW = {
     "title": "CISA Catalog of Known Exploited Vulnerabilities",
@@ -47,13 +45,17 @@ URLHAUS_RAW = {
     "query_status": "ok",
     "urls": [
         {
-            "id": "12345",
-            "url": "http://example.com/malware.exe",
+            "id": 3892371,
+            "urlhaus_reference": "https://urlhaus.abuse.ch/url/3892371/",
+            "url": "http://115.61.112.57:41776/bin.sh",
             "url_status": "online",
-            "date_added": "2026-07-20 10:00:00",
-            "last_online": "2026-07-22",
+            "host": "115.61.112.57",
+            "date_added": "2026-07-27 05:02:08 UTC",
             "threat": "malware_download",
-            "tags": ["exe", "Emotet"],
+            "blacklists": {"spamhaus_dbl": "not listed", "surbl": "not listed"},
+            "reporter": "GAYINT_DOT_ORG",
+            "larted": "true",
+            "tags": None,  # this endpoint really does return JSON null here, not just omit the key
         }
     ],
 }
@@ -85,13 +87,13 @@ def test_parse_urlhaus():
     assert len(iocs) == 1
     ioc = iocs[0]
     assert ioc.ioc_type == IOCType.URL
-    assert ioc.value == "http://example.com/malware.exe"
-    assert ioc.first_seen == "2026-07-20 10:00:00"
-    assert ioc.last_seen == "2026-07-22"
-    assert ioc.tags == ["exe", "Emotet"]
+    assert ioc.value == "http://115.61.112.57:41776/bin.sh"
+    assert ioc.first_seen == "2026-07-27 05:02:08 UTC"
+    assert ioc.last_seen == "2026-07-27 05:02:08 UTC"  # no last_online field on this endpoint
+    assert ioc.tags == []
 
 
-def test_parse_urlhaus_falls_back_to_date_added_when_last_online_missing():
-    raw = {"urls": [{"url": "http://x.test/a", "date_added": "2026-01-01", "tags": []}]}
+def test_parse_urlhaus_tags_present():
+    raw = {"urls": [{"url": "http://x.test/a", "date_added": "2026-01-01", "tags": ["exe", "Emotet"]}]}
     ioc = _parse_urlhaus(raw)[0]
-    assert ioc.last_seen == "2026-01-01"
+    assert ioc.tags == ["exe", "Emotet"]
