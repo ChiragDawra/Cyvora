@@ -80,6 +80,13 @@ def test_parse_feodo_uses_last_online_not_last_seen():
     assert ioc.first_seen == "2022-06-04 21:24:53"
     assert ioc.last_seen == "2026-03-07"  # from last_online, not the nonexistent last_seen field
     assert ioc.tags == ["Emotet"]
+    assert ioc.geo == {"country": "US", "lat": 37.09, "lon": -95.71}  # Feodo gives country directly
+
+
+def test_parse_feodo_unknown_country_leaves_geo_none():
+    raw = [{"ip_address": "1.2.3.4", "country": "ZZ", "first_seen": "", "last_online": ""}]
+    ioc = _parse_feodo(raw)[0]
+    assert ioc.geo is None
 
 
 def test_parse_urlhaus():

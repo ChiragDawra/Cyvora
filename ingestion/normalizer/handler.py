@@ -21,6 +21,7 @@ import urllib.parse
 
 import boto3
 
+from common.geo import country_centroid
 from common.schema import IOC, IOCType
 
 _s3 = boto3.client("s3")
@@ -55,6 +56,7 @@ def _parse_feodo(raw: list[dict]) -> list[IOC]:
                 first_seen=entry.get("first_seen", ""),
                 last_seen=entry.get("last_online", ""),
                 tags=[entry["malware"]] if entry.get("malware") else [],
+                geo=country_centroid(entry.get("country")),  # Feodo gives country directly, no enrichment needed
                 raw=entry,
             )
         )
