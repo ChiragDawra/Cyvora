@@ -1,15 +1,17 @@
 """Triggered by S3 PUT events on the landing bucket. Parses whichever feed landed the
 object and writes normalized IOC records into the DynamoDB IOC table.
 
-Field names verified 2026-07-26:
-- `_parse_cisa_kev`: confirmed exact against a live fetch of the real KEV feed.
-- `_parse_feodo`: confirmed exact against a live fetch of the real ipblocklist.json
-  (top-level array; note the "last seen" field is `last_online`, not `last_seen`).
-- `_parse_urlhaus`: field names (`url`, `date_added`, `tags`, `last_online`) confirmed
-  against abuse.ch's own integration docs, but the top-level `{"urls": [...]}` wrapper
-  is inferred by convention from other abuse.ch bulk endpoints, not confirmed against a
-  live authenticated response (requires a real Auth-Key to test) — verify this once a
-  key is registered, per EXECUTION_GUIDE.md.
+Field names verified against live, authenticated responses (2026-07-26/27):
+- `_parse_cisa_kev`: confirmed exact against a live fetch, and re-validated against the
+  full real catalog (1653 entries, zero parse failures).
+- `_parse_feodo`: confirmed exact against a live, authenticated fetch of
+  ipblocklist.json (top-level array; "last seen" field is `last_online`, not the
+  nonexistent `last_seen`).
+- `_parse_urlhaus`: confirmed exact against a live, authenticated fetch of
+  /v1/urls/recent/. The `{"query_status": ..., "urls": [...]}` wrapper was correct.
+  Unlike Feodo, this endpoint has NO `last_online` field at all - only `date_added` -
+  so first_seen and last_seen are both set from it. `tags` can be JSON `null` (not
+  just absent), handled by `entry.get("tags", []) or []`.
 """
 from __future__ import annotations
 
@@ -34,7 +36,7 @@ def _parse_urlhaus(raw: dict) -> list[IOC]:
                 value=entry["url"],
                 source_feed="urlhaus",
                 first_seen=entry.get("date_added", ""),
-                last_seen=entry.get("last_online") or entry.get("date_added", ""),
+                last_seen=entry.get("date_added", ""),  # this endpoint has no last_online field
                 tags=entry.get("tags", []) or [],
                 raw=entry,
             )
