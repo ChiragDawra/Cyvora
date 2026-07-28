@@ -25,7 +25,9 @@ jobs:
       - name: Test (ingestion)
         working-directory: ingestion
         run: python -m pytest -q
-      # TODO: add backend/ tests once backend/api/handler.py has a moto-mocked DynamoDB test
+      - name: Test (backend)
+        working-directory: backend
+        run: python -m pytest -q
 
   frontend:
     name: Frontend (Next.js)

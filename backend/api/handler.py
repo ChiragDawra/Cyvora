@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -24,11 +25,26 @@ _IOC_TYPES = ["ip", "domain", "url", "hash", "cve"]
 _QUERY_LIMIT = 100
 
 
+def _json_default(value):
+    """Makes DynamoDB's Decimal values JSON-serializable.
+
+    boto3's DynamoDB resource layer returns every number as a Decimal, and json.dumps
+    raises TypeError on those - which meant every response from this handler was a 500.
+
+    Integral values go out as int so `ingested_at` stays a plain epoch rather than
+    1.7852e9; everything else (geo lat/lon) becomes a float, which is what the frontend's
+    map expects.
+    """
+    if isinstance(value, Decimal):
+        return int(value) if value % 1 == 0 else float(value)
+    raise TypeError(f"Not JSON serializable: {type(value).__name__}")
+
+
 def _response(status: int, body) -> dict:
     return {
         "statusCode": status,
         "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"},
-        "body": json.dumps(body),
+        "body": json.dumps(body, default=_json_default),
     }
 
 
