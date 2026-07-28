@@ -57,3 +57,32 @@ def test_to_dynamo_item_sets_ttl():
     )
     item = ioc.to_dynamo_item()
     assert item["expires_at"] == item["ingested_at"] + TTL_SECONDS
+
+
+def test_geo_floats_become_decimal_for_dynamo():
+    """boto3's DynamoDB layer rejects floats outright - this broke every Feodo write."""
+    from decimal import Decimal
+
+    ioc = IOC(
+        ioc_type=IOCType.IP,
+        value="1.2.3.4",
+        source_feed="feodo",
+        first_seen="",
+        last_seen="",
+        geo={"country": "US", "lat": 37.09, "lon": -95.71},
+    )
+    geo = ioc.to_dynamo_item()["geo"]
+
+    assert not any(isinstance(v, float) for v in geo.values())
+    assert geo["lat"] == Decimal("37.09")  # exact, not 37.089999999999996
+    assert geo["lon"] == Decimal("-95.71")
+    assert geo["country"] == "US"  # non-numbers pass through untouched
+
+
+def test_to_dynamo_number_recurses():
+    from decimal import Decimal
+
+    from common.schema import to_dynamo_number
+
+    out = to_dynamo_number({"a": [1.5, {"b": 2.5}], "c": 3, "d": "x"})
+    assert out == {"a": [Decimal("1.5"), {"b": Decimal("2.5")}], "c": 3, "d": "x"}

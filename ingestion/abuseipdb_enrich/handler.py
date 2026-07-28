@@ -20,7 +20,7 @@ import requests
 from boto3.dynamodb.conditions import Attr
 
 from common.geo import country_centroid
-from common.schema import IOC, IOCType
+from common.schema import IOC, IOCType, to_dynamo_number
 
 ABUSEIPDB_CHECK_URL = "https://api.abuseipdb.com/api/v2/check"
 
@@ -97,7 +97,7 @@ def lambda_handler(event, context):
         expr_values = {":c": data.get("abuseConfidenceScore", 0)}
         if geo is not None:
             update_expr += ", geo = :g"
-            expr_values[":g"] = geo
+            expr_values[":g"] = to_dynamo_number(geo)  # lat/lon floats -> Decimal
 
         table.update_item(
             Key={"ioc_id": ioc_id},

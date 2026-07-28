@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 
 
@@ -14,6 +15,29 @@ from enum import Enum
 # useful life of a URLhaus/Feodo entry and keeps the table comfortably inside the
 # always-free 25 GB.
 TTL_SECONDS = 90 * 24 * 60 * 60
+
+
+def to_dynamo_number(value):
+    """Recursively converts floats to Decimal for DynamoDB.
+
+    boto3's DynamoDB resource layer refuses Python floats outright
+    ("Float types are not supported. Use Decimal types instead."), because binary floats
+    can't round-trip through DynamoDB's decimal number type without drift.
+
+    This is the single serialization boundary for it. Keeping the conversion here rather
+    than in common/geo.py leaves the geo helpers returning plain floats, which is what
+    every non-DynamoDB caller and every test wants.
+
+    Decimal(str(x)) rather than Decimal(x): the string form gives the shortest decimal
+    that round-trips, so 37.09 stays 37.09 instead of becoming 37.0899999999999998579...
+    """
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: to_dynamo_number(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [to_dynamo_number(v) for v in value]
+    return value
 
 
 class IOCType(str, Enum):
@@ -60,5 +84,5 @@ class IOC:
         if self.confidence is not None:
             item["confidence"] = self.confidence
         if self.geo is not None:
-            item["geo"] = self.geo
+            item["geo"] = to_dynamo_number(self.geo)  # lat/lon are floats; DynamoDB needs Decimal
         return item
