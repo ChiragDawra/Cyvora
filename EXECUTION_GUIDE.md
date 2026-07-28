@@ -21,6 +21,57 @@ Check off tasks as you finish them. Don't skip ahead to v2/v3 until v1's Definit
 - **2026-07-27:** Real abuse.ch Auth-Key and AbuseIPDB key registered and placed in a gitignored `.env` (fixed to the `ABUSECH_AUTH_KEY`/`ABUSEIPDB_API_KEY` names the code actually reads — the first draft used non-standard key names/format that wouldn't have loaded). Hit all 3 v1 feeds live: URLhaus's `{"query_status": ..., "urls": [...]}` wrapper is now **confirmed correct**, but that endpoint has no `last_online` field at all (only `date_added`) — fixed the normalizer, which had guessed a fallback for a field that doesn't exist there. Feodo and AbuseIPDB responses matched what was already coded, no changes needed. Also validated `_parse_cisa_kev` against the full real catalog (1,653 entries, 0 parse failures) using a local download. **Still blocked on:** AWS account/credentials — nothing is deployed yet; the feed *logic* is now proven against live data, but no Lambda, EventBridge schedule, or DynamoDB write has actually run.
 - **2026-07-27 (later):** AWS account created, IAM user `Cyvora-Terraform` set up with `AdministratorAccess` (not root — good), keys added to `.env`, confirmed working via `aws sts get-caller-identity`. Installed Terraform + AWS CLI locally (`brew install awscli` + `brew install hashicorp/tap/terraform` — plain `brew install terraform` no longer works, HashiCorp pulled it from homebrew-core). `terraform init`/`fmt`/`validate` all pass for the first time against the real provider. **First real AWS resource is live:** the Budgets alarm (`aws_budgets_budget.monthly`) — $5/month, 80% actual + 100% forecasted email alerts, verified via `aws budgets describe-budget` (status `HEALTHY`, `$0` spend so far). Note: the harness's own auto-mode classifier blocks `terraform apply` from running unattended, so applies need to be run by the user directly (interactively, with the `yes` prompt) rather than by me with `-auto-approve` — that's how this one landed. Same approach will apply to every subsequent `terraform apply` in this project.
 
+- **2026-07-28:** **The stack is deployed.** Audited every open Phase 1 item against a
+  hard "must cost $0" constraint first — findings and resolutions are tracked in
+  `PHASE1_ISSUES.md`. The headline finding: applying the stack as written would have cost
+  roughly **$12/month**, over the budget alarm, almost entirely from write amplification.
+  URLhaus's `/urls/recent/` returns the same ~550 URLs on every poll, and the normalizer
+  re-wrote all of them unconditionally — at a 5-minute cadence that's ~160k DynamoDB
+  writes/day for a few dozen genuinely new records. Fixed with per-feed watermarks in S3,
+  hourly instead of 5-minute polling, provisioned DynamoDB capacity inside the always-free
+  25 WCU/25 RCU (on-demand has no free allowance at all), an INCLUDE instead of ALL GSI
+  projection, TTL on the table, 7-day expiry on raw landing objects, and 7-day log
+  retention. Also fixed four real bugs found along the way: `_get_unenriched_ips` passed
+  `Limit` alongside a `FilterExpression` and so usually returned nothing; the IAM policy
+  was missing `dynamodb:UpdateItem` (the enricher's entire write-back) and `s3:ListBucket`
+  (without it a `GetObject` on a missing key returns 403, not 404, which breaks every
+  feed's first-run state read); and the map would have had ~5 plottable points, since
+  URLhaus yields URLs and CISA KEV yields CVEs, neither of which has a location — URLhaus
+  URLs hosted on a literal IP now also emit an IP IOC for the enricher to geo-locate.
+  State moved to S3 with native lockfile locking, and a GitHub OIDC role + deploy workflow
+  replace the "run applies by hand" note below. `terraform apply` created **60 of 61
+  resources**. The one failure is CloudFront: AWS blocks new accounts from creating
+  distributions until the account is verified through a support case — not a config
+  problem, `infra/cloudfront.tf` applies as-is once cleared. **Still open:** CloudFront
+  verification (PHASE1_ISSUES.md X1), and observing the first live scheduled pipeline run
+  (X2).
+
+### Verifying the live pipeline
+
+Run these after the first hourly schedule fires (all read-only except the invoke):
+
+```bash
+cd infra && ./run.sh output          # bucket names, table name, API URL
+
+# Force a run instead of waiting for the schedule
+aws lambda invoke --function-name cyvora-urlhaus /tmp/out.json && cat /tmp/out.json
+aws lambda invoke --function-name cyvora-cisa-kev /tmp/out.json && cat /tmp/out.json
+
+# Did the raw pull land, and did the normalizer write IOCs?
+aws s3 ls s3://cyvora-landing-788292454412/urlhaus/
+aws dynamodb scan --table-name cyvora-iocs --select COUNT
+
+# Does the API serve them?
+curl "$(cd infra && ./run.sh output -raw api_url)/iocs?type=ip"
+
+# Errors, if any
+aws logs tail /aws/lambda/cyvora-normalizer --since 1h
+```
+
+A second `cyvora-urlhaus` invocation within the same hour should return
+`"skipped_unchanged": true`, and a second normalizer run over the same feed should report
+`"written": 0` with a non-zero `skipped_already_seen` — that's the cost fix working.
+
 ---
 
 ## Phase 0 — Repo & environment setup
@@ -41,34 +92,34 @@ Do this before writing any feature code.
 
 ### Feeds (exactly these 3 — do not add more in v1)
 - [x] Register an **abuse.ch Auth-Key** (mandatory since June 2025) *(done — key in `.env`, confirmed working live against both URLhaus and Feodo)*
-- [ ] Pull **URLhaus** + **Feodo Tracker** into the actual pipeline *(fetch logic confirmed live and correct; `write_raw()`'s S3 write is still untested — no AWS bucket exists yet)*
+- [x] Pull **URLhaus** + **Feodo Tracker** into the actual pipeline *(Lambdas deployed, hourly EventBridge schedules live, landing bucket `cyvora-landing-788292454412` created. Cadence dropped from 5 min to hourly — see PHASE1_ISSUES.md A1 for why 5 min was a $12/month mistake)*
 - [x] Integrate **CISA KEV** feed (free, no key, no auth) *(parser validated against the full real catalog, 1,653/1,653 entries — highest-confidence feed of the three; still not actually deployed/scheduled)*
 - [x] Register an **AbuseIPDB** free-tier key (1,000 checks/day) *(done — key in `.env`, confirmed working live)*
-- [ ] Use AbuseIPDB to enrich a *filtered subset* of IOCs only — never bulk-enrich through a rate-limited endpoint *(single live test call confirmed the API contract; `_get_unenriched_ips` in `ingestion/abuseipdb_enrich/handler.py` is still a placeholder — no real DynamoDB query wired up since there's no table yet)*
+- [x] Use AbuseIPDB to enrich a *filtered subset* of IOCs only — never bulk-enrich through a rate-limited endpoint *(`_get_unenriched_ips` now paginates a filtered scan properly — the old version passed `Limit` alongside a `FilterExpression`, which DynamoDB applies before filtering, so it usually returned nothing. Capped at 400 IPs/day against a 1,000/day free quota, with 429 handled as a clean stop)*
 
 ### Ingestion & storage
-- [ ] One **EventBridge Scheduler → Lambda (Python)** per feed, matched to that feed's update cadence *(Lambda code written, no EventBridge schedule or actual deployment yet — that's Terraform work still to add per `infra/README.md`)*
+- [x] One **EventBridge Scheduler → Lambda (Python)** per feed, matched to that feed's update cadence *(all 4 schedules live: URLhaus + Feodo hourly, CISA KEV + AbuseIPDB enrich daily)*
 - [x] Raw pulls land in **S3**; a normalization Lambda maps each feed's format into one common IOC schema *(`ingestion/normalizer/handler.py` — all three parsers now verified against live, authenticated feed responses, including the full 1,653-entry real KEV catalog. Fixed a real URLhaus bug: that endpoint has no `last_online` field at all, unlike Feodo. Covered by 9 passing tests in `ingestion/tests/`. The S3-write and DynamoDB-write halves of the pipeline are still untested — no AWS account yet)*
-- [ ] **DynamoDB** as the current IOC/alert store, with GSIs on time and geo (stays inside the always-free 25GB tier) *(table + time GSI defined in `infra/dynamodb.tf`, not yet applied; geo GSI deferred — needs a geohash scheme, not a native DynamoDB feature)*
-- [ ] S3 + Athena for historical/append-only records (skip AWS Timestream — closed to new customers since June 2025; use Timestream for InfluxDB or Postgres/RDS if you need real time-series queries later)
+- [x] **DynamoDB** as the current IOC/alert store, with GSIs on time and geo (stays inside the always-free 25GB tier) *(`cyvora-iocs` live with the `type-time-index` GSI. **Provisioned**, not on-demand: the always-free 25 WCU/25 RCU applies only to provisioned capacity, on-demand has no free allowance at all. 12/12 WCU + 5/20 RCU across table and index. GSI projection is INCLUDE not ALL, and a 90-day TTL keeps storage inside the free 25GB. Geo GSI still deferred — needs a geohash scheme, not a native DynamoDB feature)*
+- [~] S3 + Athena for historical/append-only records **— deliberately deferred past v1.** Athena is $5/TB scanned, which rounds to $0 at this volume but isn't always-free, and it would add a Glue catalog + partitioning scheme to maintain for no v1-visible benefit. Raw pulls do land in S3 and expire after 7 days. (Still skip AWS Timestream — closed to new customers since June 2025.)
 
 ### Backend & frontend
-- [ ] **API Gateway + Lambda** backend serving IOC/alert data *(`backend/api/handler.py` stubbed, uses a full table `scan` until the GSI-based query TODO is done — not deployed)*
+- [x] **API Gateway + Lambda** backend serving IOC/alert data *(HTTP API + `cyvora-api` Lambda deployed, querying the GSI rather than scanning)*
 - [x] **React/Next.js** frontend, globe view via **globe.gl / react-globe.gl**, with a **2D map fallback (Leaflet)** — scaffolded and builds clean (`npm run build` passes) with placeholder points; not yet wired to the real API
-- [ ] Deploy frontend via **S3 + CloudFront**
+- [~] Deploy frontend via **S3 + CloudFront** *(bucket live, `scripts/deploy_frontend.sh` and the CI deploy job both written and wired to the Terraform outputs. **The distribution itself is blocked on AWS account verification** — a new-account restriction, not a config problem. See PHASE1_ISSUES.md X1)*
 
 ### Infra & ops
-- [ ] All infra defined in **Terraform**, applied via CI *(Budgets alarm applied and live; S3/DynamoDB defined but not yet applied — Lambda/API Gateway/EventBridge/CloudFront still to add. Applies must be run by the user directly — the harness blocks `terraform apply -auto-approve` from running unattended)*
-- [x] **GitHub Actions** CI/CD: lint/build/`terraform validate` wired up (`.github/workflows/ci.yml`) — `terraform apply`/deploy step still to add once there's something real to deploy
-- [ ] **CloudWatch** dashboards + alarms for Lambda errors/latency
+- [x] All infra defined in **Terraform**, applied via CI *(60 of 61 resources live; only CloudFront is outstanding, blocked externally. State moved to S3 with native lockfile locking so CI can apply — no DynamoDB lock table, so no extra cost)*
+- [x] **GitHub Actions** CI/CD: lint/build/`terraform validate` (`.github/workflows/ci.yml`) plus a deploy job (`.github/workflows/deploy.yml`) that applies Terraform and publishes the frontend, authenticating via GitHub OIDC — no long-lived AWS keys in the repo
+- [x] **CloudWatch** dashboards + alarms for Lambda errors/latency *(one `cyvora` dashboard — 4 widgets including DynamoDB consumed capacity against the free-tier ceiling — plus 6 Lambda error alarms and a DynamoDB throttle alarm, all inside CloudWatch's always-free 10 alarms / 3 dashboards. Log groups are Terraform-managed at 7-day retention so Lambda can't create them first with Never Expire)*
 - [x] Confirm the **AWS Budgets alarm** from Phase 0 is actually active *(confirmed via `aws budgets describe-budget`: status HEALTHY, $5/month limit, $0 spend so far)*
 
 ### Definition of Done (v1)
-- [ ] All 3 feeds ingesting on schedule with visible, correctly-plotted data on the map
-- [ ] 100% of infra provisioned through Terraform + CI/CD (no manual console changes)
-- [ ] Publicly reachable URL (CloudFront), budget alarm confirmed active
-- [ ] README updated with architecture diagram/summary + screenshots
-- [ ] No feature, copy, or label anywhere claims "prediction" or "attacker origin" — see Explicitly Out of Scope below
+- [~] All 3 feeds ingesting on schedule with visible, correctly-plotted data on the map *(schedules live, feed logic verified against live data and covered by 20 tests; the deployed S3-write/DynamoDB-write path hasn't been observed running yet — see PHASE1_ISSUES.md X2 and the verification commands in the progress log)*
+- [x] 100% of infra provisioned through Terraform + CI/CD (no manual console changes) *(the one exception is the Terraform state bucket itself, created by `infra/bootstrap.sh` — a backend can't provision itself)*
+- [~] Publicly reachable URL (CloudFront), budget alarm confirmed active *(budget alarm confirmed HEALTHY; the CloudFront distribution is blocked on AWS account verification — PHASE1_ISSUES.md X1)*
+- [~] README updated with architecture diagram/summary + screenshots *(architecture written up; screenshots need the live URL)*
+- [x] No feature, copy, or label anywhere claims "prediction" or "attacker origin" — see Explicitly Out of Scope below
 
 ---
 

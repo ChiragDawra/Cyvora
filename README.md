@@ -7,15 +7,88 @@ A live, self-hostable open-source-threat-intel aggregation and anomaly-flagging 
 - [`GPT_Analysis.md`](./GPT_Analysis.md) — original broad system-design research (reference only)
 - [`Claude_Analysis.md`](./Claude_Analysis.md) — feasibility critique and the staged MVP plan the guide is built from
 
+## Architecture
+
+```
+EventBridge Scheduler                     ┌──────────────┐
+  ├─ hourly ──▶ urlhaus  Lambda ──┐       │   Browser    │
+  ├─ hourly ──▶ feodo    Lambda ──┤       └──────┬───────┘
+  └─ daily  ──▶ cisa_kev Lambda ──┤              │ HTTPS
+                                  ▼              ▼
+                        ┌──────────────┐  ┌──────────────┐
+                        │  S3 landing  │  │  CloudFront  │
+                        │  (raw JSON,  │  └──────┬───────┘
+                        │   7-day TTL) │         │
+                        └──────┬───────┘   ┌─────┴──────┐
+                    s3:ObjectCreated       │ S3 frontend│
+                               ▼           │  (private, │
+                        ┌──────────────┐   │    OAC)    │
+                        │  normalizer  │   └────────────┘
+                        │    Lambda    │
+                        └──────┬───────┘   ┌──────────────┐
+                               ▼           │ API Gateway  │
+                        ┌──────────────┐   │  (HTTP API)  │
+                        │   DynamoDB   │◀──┴──────┬───────┘
+                        │  cyvora-iocs │          │
+                        │  + GSI, TTL  │   ┌──────┴───────┐
+                        └──────▲───────┘   │  api Lambda  │
+                               │           └──────────────┘
+                        ┌──────┴────────┐
+   daily ──────────────▶│ abuseipdb     │  confidence score
+                        │ enrich Lambda │  + country geo
+                        └───────────────┘
+```
+
+Every arrow is Terraform-managed. CI (`terraform validate` + tests) runs on every push;
+`deploy.yml` applies the stack and publishes the frontend on main, authenticating through
+GitHub OIDC rather than stored AWS keys.
+
+**Data flow.** Each feed Lambda pulls its source and lands the raw JSON in S3, skipping the
+write entirely when the payload hasn't changed since the last pull. The object landing
+triggers the normalizer, which maps each feed's format into one common IOC schema and
+writes only records newer than that feed's watermark. A daily Lambda enriches a capped
+subset of IP IOCs through AbuseIPDB, adding a confidence score and country-level geo. The
+API Lambda serves recent IOCs out of a GSI, and the statically-exported Next.js app plots
+the ones that have geo.
+
+## Cost design
+
+The whole thing is built to run at effectively **$0/month**, and that constraint drove real
+architectural decisions rather than being an afterthought:
+
+- **DynamoDB is provisioned, not on-demand.** The always-free 25 WCU / 25 RCU applies only
+  to provisioned capacity — on-demand has no free allowance at all.
+- **Feeds are watermarked.** URLhaus re-serves the same ~550 URLs on every poll; writing
+  all of them every time was a ~$12/month line item on its own.
+- **Everything expires.** 90-day TTL on IOCs, 7-day expiry on raw pulls, 7-day log
+  retention — no unbounded growth anywhere.
+- **A $5/month Budgets alarm** is the backstop, plus a CloudWatch alarm on DynamoDB
+  throttling as the early signal that the pipeline is outgrowing the free tier.
+
+`PHASE1_ISSUES.md` has the full audit, including the numbers behind each decision.
+
 ## Repo structure
 
 ```
-infra/        Terraform (AWS resources)
-ingestion/    Feed-puller + normalizer Lambdas (Python)
-backend/      API Gateway + Lambda backend (Python)
-frontend/     Next.js app (globe + 2D map views)
+infra/        Terraform (all AWS resources)
+ingestion/    Feed-puller, normalizer, and enrichment Lambdas (Python)
+backend/      API Lambda behind API Gateway (Python)
+frontend/     Next.js app, static export (globe + 2D map views)
+scripts/      Frontend build-and-publish helper
 ```
 
 ## Status
 
-Pre-v1: repo scaffolding is in place (this structure, CI skeleton, Terraform skeleton for S3/DynamoDB/Budgets). No AWS resources have been deployed yet. See `EXECUTION_GUIDE.md` Phase 0/1 for what's next.
+**v1 deployed.** 60 of 61 Terraform resources are live: all three feeds on schedule, the
+S3 → normalizer → DynamoDB pipeline, the API, and both buckets.
+
+Two items remain, tracked in `PHASE1_ISSUES.md`:
+
+- The **CloudFront distribution** is blocked pending AWS account verification — a
+  new-account restriction, not a configuration problem. Until it clears there's no public
+  HTTPS URL.
+- The first **live scheduled pipeline run** hasn't been observed yet. The feed logic is
+  verified against live data and covered by 20 tests; what's unconfirmed is the deployed
+  write path.
+
+See `EXECUTION_GUIDE.md` for the full checklist and the verification commands.
