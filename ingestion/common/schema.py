@@ -10,6 +10,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+# How long an IOC stays in DynamoDB before TTL removes it. 90 days is well past the
+# useful life of a URLhaus/Feodo entry and keeps the table comfortably inside the
+# always-free 25 GB.
+TTL_SECONDS = 90 * 24 * 60 * 60
+
+
 class IOCType(str, Enum):
     IP = "ip"
     DOMAIN = "domain"
@@ -36,6 +42,7 @@ class IOC:
         return digest[:32]
 
     def to_dynamo_item(self) -> dict:
+        now = int(time.time())
         item = {
             "ioc_id": self.ioc_id,
             "ioc_type": self.ioc_type.value,
@@ -44,7 +51,11 @@ class IOC:
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
             "tags": self.tags,
-            "ingested_at": int(time.time()),
+            "ingested_at": now,
+            # Consumed by the TTL config in infra/dynamodb.tf. Threat intel goes stale
+            # fast and this is the only thing keeping the table inside DynamoDB's
+            # always-free 25 GB. TTL deletes cost no write capacity.
+            "expires_at": now + TTL_SECONDS,
         }
         if self.confidence is not None:
             item["confidence"] = self.confidence

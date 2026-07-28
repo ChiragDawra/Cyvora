@@ -27,11 +27,21 @@ data "aws_iam_policy_document" "lambda_data_access" {
     resources = ["${aws_s3_bucket.landing.arn}/*"]
   }
 
+  # Without s3:ListBucket, a GetObject on a key that doesn't exist returns 403
+  # AccessDenied instead of 404 NoSuchKey - which would make common/feed_state.py's
+  # "no state yet" path raise on the very first run of every feed.
+  statement {
+    sid       = "LandingBucketList"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.landing.arn]
+  }
+
   statement {
     sid = "IocTableReadWrite"
     actions = [
       "dynamodb:PutItem",
       "dynamodb:BatchWriteItem",
+      "dynamodb:UpdateItem", # abuseipdb_enrich writes confidence/geo back onto existing items
       "dynamodb:GetItem",
       "dynamodb:Query",
       "dynamodb:Scan",

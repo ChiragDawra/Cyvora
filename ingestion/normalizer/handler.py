@@ -15,12 +15,14 @@ Field names verified against live, authenticated responses (2026-07-26/27):
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import urllib.parse
 
 import boto3
 
+from common.feed_state import get_state, put_state
 from common.geo import country_centroid
 from common.schema import IOC, IOCType
 
@@ -28,20 +30,59 @@ _s3 = boto3.client("s3")
 _dynamodb = boto3.resource("dynamodb")
 
 
+def _url_host_ip(url: str) -> str | None:
+    """Returns the URL's host when it's a literal IPv4 address, else None.
+
+    A large share of URLhaus entries point straight at an IP rather than a domain. Those
+    IPs are the only thing in this feed that can ever be plotted on the map - a URL has
+    no location, and resolving domains to IPs is neither free nor stable. Emitting them
+    as separate IP IOCs lets the AbuseIPDB enricher geo-locate them.
+    """
+    try:
+        host = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return None
+    if not host:
+        return None
+    try:
+        ipaddress.IPv4Address(host)
+    except ValueError:
+        return None
+    return host
+
+
 def _parse_urlhaus(raw: dict) -> list[IOC]:
     iocs = []
     for entry in raw.get("urls", []):
+        url = entry["url"]
+        date_added = entry.get("date_added", "")
+        tags = entry.get("tags", []) or []
+
         iocs.append(
             IOC(
                 ioc_type=IOCType.URL,
-                value=entry["url"],
+                value=url,
                 source_feed="urlhaus",
-                first_seen=entry.get("date_added", ""),
-                last_seen=entry.get("date_added", ""),  # this endpoint has no last_online field
-                tags=entry.get("tags", []) or [],
+                first_seen=date_added,
+                last_seen=date_added,  # this endpoint has no last_online field
+                tags=tags,
                 raw=entry,
             )
         )
+
+        host_ip = _url_host_ip(url)
+        if host_ip:
+            iocs.append(
+                IOC(
+                    ioc_type=IOCType.IP,
+                    value=host_ip,
+                    source_feed="urlhaus",
+                    first_seen=date_added,
+                    last_seen=date_added,
+                    tags=tags,
+                    raw={"url": url},
+                )
+            )
     return iocs
 
 
@@ -87,9 +128,33 @@ _PARSERS = {
 }
 
 
+def _new_since_watermark(feed_name: str, iocs: list[IOC]) -> tuple[list[IOC], str | None]:
+    """Filters out records already written on a previous run, and returns the new watermark.
+
+    Every feed here is a rolling snapshot, not a delta: URLhaus's /urls/recent/ returns
+    the same ~550 URLs on every poll, and the CISA KEV catalog re-serves all ~1,650
+    entries daily. Writing all of them every time is the single biggest cost driver in
+    the pipeline - hourly URLhaus polls alone would be ~4.8M DynamoDB writes/month.
+
+    So each feed keeps a watermark: the highest source timestamp already written. Only
+    strictly-newer records get written. Comparison is lexicographic, which is safe
+    because a given feed always formats its timestamps identically and zero-padded
+    ("2026-07-28 10:00:00 UTC", "2026-07-28"). Watermarks are never compared across feeds.
+    """
+    state = get_state(f"{feed_name}.watermark") or {}
+    watermark = state.get("watermark")
+
+    fresh = [ioc for ioc in iocs if not watermark or ioc.first_seen > watermark]
+    timestamps = [ioc.first_seen for ioc in iocs if ioc.first_seen]
+    new_watermark = max(timestamps) if timestamps else watermark
+
+    return fresh, new_watermark
+
+
 def lambda_handler(event, context):
     table = _dynamodb.Table(os.environ["IOC_TABLE"])
     written = 0
+    skipped = 0
 
     for record in event["Records"]:
         bucket = record["s3"]["bucket"]["name"]
@@ -98,14 +163,25 @@ def lambda_handler(event, context):
 
         parser = _PARSERS.get(feed_name)
         if parser is None:
-            continue  # unrecognized feed prefix, skip rather than fail the whole batch
+            continue  # unrecognized feed prefix (e.g. _state/), skip rather than fail the batch
 
         obj = _s3.get_object(Bucket=bucket, Key=key)
         raw = json.loads(obj["Body"].read())
 
-        with table.batch_writer() as batch:
-            for ioc in parser(raw):
+        parsed = parser(raw)
+        fresh, new_watermark = _new_since_watermark(feed_name, parsed)
+        skipped += len(parsed) - len(fresh)
+
+        # overwrite_by_pkeys: one URLhaus pull can yield several URLs on the same host IP,
+        # and BatchWriteItem rejects a request containing duplicate keys.
+        with table.batch_writer(overwrite_by_pkeys=["ioc_id"]) as batch:
+            for ioc in fresh:
                 batch.put_item(Item=ioc.to_dynamo_item())
                 written += 1
 
-    return {"written": written}
+        # Only advance the watermark after the writes land - a mid-batch failure re-runs
+        # the whole object rather than silently dropping records.
+        if new_watermark:
+            put_state(feed_name + ".watermark", {"watermark": new_watermark})
+
+    return {"written": written, "skipped_already_seen": skipped}

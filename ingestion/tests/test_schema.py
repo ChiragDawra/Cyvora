@@ -42,3 +42,18 @@ def test_to_dynamo_item_includes_confidence_and_geo_when_set():
     item = ioc.to_dynamo_item()
     assert item["confidence"] == 87
     assert item["geo"] == {"country": "US"}
+
+
+def test_to_dynamo_item_sets_ttl():
+    """expires_at drives the TTL in infra/dynamodb.tf - without it the table grows forever."""
+    from common.schema import TTL_SECONDS
+
+    ioc = IOC(
+        ioc_type=IOCType.IP,
+        value="1.2.3.4",
+        source_feed="feodo",
+        first_seen="2026-01-01",
+        last_seen="2026-01-02",
+    )
+    item = ioc.to_dynamo_item()
+    assert item["expires_at"] == item["ingested_at"] + TTL_SECONDS

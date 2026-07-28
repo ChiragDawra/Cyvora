@@ -18,4 +18,5 @@ def lambda_handler(event, context):
     payload = resp.json()
 
     key = write_raw("cisa_kev", payload)
-    return {"feed": "cisa_kev", "landed_key": key}
+    # key is None when the payload is unchanged since the last pull - see write_raw.
+    return {"feed": "cisa_kev", "landed_key": key, "skipped_unchanged": key is None}

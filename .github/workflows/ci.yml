@@ -69,10 +69,7 @@ jobs:
       - name: Validate
         working-directory: infra
         run: terraform validate
-      # `terraform plan`/`apply` need real AWS credentials and are deliberately not run
-      # here yet - no AWS OIDC role or secrets are configured for this repo. Applies are
-      # run manually via infra/run.sh until that's set up. See EXECUTION_GUIDE.md.
-
-  # TODO (once AWS OIDC role + GitHub secrets are set up): add a `deploy` job gated on
-  # github.ref == 'refs/heads/main' that runs `terraform apply` and syncs the built
-  # frontend to S3/CloudFront.
+      # `terraform plan`/`apply` need real AWS credentials, so they don't run here.
+      # -backend=false skips the S3 backend in infra/backend.tf, which validate doesn't
+      # need. The actual apply happens in .github/workflows/deploy.yml, which runs after
+      # this workflow succeeds on main and authenticates via OIDC.

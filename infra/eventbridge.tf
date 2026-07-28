@@ -34,7 +34,12 @@ resource "aws_iam_role_policy" "scheduler_invoke_lambda" {
   policy = data.aws_iam_policy_document.scheduler_invoke_lambda.json
 }
 
-# abuse.ch regenerates URLhaus/Feodo dumps every 5 minutes - don't poll faster.
+# abuse.ch regenerates URLhaus/Feodo dumps every 5 minutes, but polling that fast buys
+# nothing here and costs a lot: /urls/recent/ returns the same rolling ~550 URLs every
+# time, so 288 pulls/day meant ~160k DynamoDB writes/day for a few dozen genuinely new
+# records. Hourly, combined with the watermark in ingestion/normalizer/handler.py, keeps
+# the whole pipeline inside the free tier. The feed window is far wider than an hour, so
+# nothing is missed.
 resource "aws_scheduler_schedule" "urlhaus" {
   name       = "${var.project_name}-urlhaus"
   group_name = "default"
@@ -43,7 +48,7 @@ resource "aws_scheduler_schedule" "urlhaus" {
     mode = "OFF"
   }
 
-  schedule_expression = "rate(5 minutes)"
+  schedule_expression = "rate(1 hour)"
 
   target {
     arn      = aws_lambda_function.urlhaus.arn
@@ -59,7 +64,7 @@ resource "aws_scheduler_schedule" "feodo" {
     mode = "OFF"
   }
 
-  schedule_expression = "rate(5 minutes)"
+  schedule_expression = "rate(1 hour)"
 
   target {
     arn      = aws_lambda_function.feodo.arn
@@ -102,12 +107,21 @@ resource "aws_scheduler_schedule" "abuseipdb_enrich" {
   }
 }
 
+# One notification per feed prefix rather than a bucket-wide rule. The normalizer also
+# writes its own watermark objects under _state/ (see ingestion/common/feed_state.py),
+# and a bucket-wide rule would have those re-invoke the normalizer on every run - a
+# pointless invocation each time, and one bad parser change away from a write loop.
 resource "aws_s3_bucket_notification" "landing_triggers_normalizer" {
   bucket = aws_s3_bucket.landing.id
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.normalizer.arn
-    events              = ["s3:ObjectCreated:*"]
+  dynamic "lambda_function" {
+    for_each = toset(["urlhaus/", "feodo/", "cisa_kev/"])
+
+    content {
+      lambda_function_arn = aws_lambda_function.normalizer.arn
+      events              = ["s3:ObjectCreated:*"]
+      filter_prefix       = lambda_function.value
+    }
   }
 
   depends_on = [aws_lambda_permission.allow_s3_invoke_normalizer]

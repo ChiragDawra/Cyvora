@@ -29,8 +29,12 @@ data "archive_file" "urlhaus_zip" {
   output_path = "${path.module}/../ingestion/build/urlhaus.zip"
 }
 
+# Every function below sets depends_on for its log group: Lambda creates
+# /aws/lambda/<name> itself on first invocation with retention set to Never Expire, and
+# whichever gets there first wins. Creating them in Terraform first is what makes the
+# 7-day retention in infra/cloudwatch.tf actually stick.
 resource "aws_lambda_function" "urlhaus" {
-  function_name    = "${var.project_name}-urlhaus"
+  function_name    = local.lambda_function_names.urlhaus
   role             = aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
@@ -45,6 +49,8 @@ resource "aws_lambda_function" "urlhaus" {
       ABUSECH_AUTH_KEY = var.abusech_auth_key
     })
   }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
 data "archive_file" "feodo_zip" {
@@ -54,7 +60,7 @@ data "archive_file" "feodo_zip" {
 }
 
 resource "aws_lambda_function" "feodo" {
-  function_name    = "${var.project_name}-feodo"
+  function_name    = local.lambda_function_names.feodo
   role             = aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
@@ -69,6 +75,8 @@ resource "aws_lambda_function" "feodo" {
       ABUSECH_AUTH_KEY = var.abusech_auth_key
     })
   }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
 data "archive_file" "cisa_kev_zip" {
@@ -78,12 +86,12 @@ data "archive_file" "cisa_kev_zip" {
 }
 
 resource "aws_lambda_function" "cisa_kev" {
-  function_name    = "${var.project_name}-cisa-kev"
+  function_name    = local.lambda_function_names.cisa_kev
   role             = aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   architectures    = ["x86_64"]
-  timeout          = 30
+  timeout          = 60 # the KEV catalog is ~1.5 MB and still growing
   filename         = data.archive_file.cisa_kev_zip.output_path
   source_code_hash = data.archive_file.cisa_kev_zip.output_base64sha256
   layers           = [aws_lambda_layer_version.deps.arn]
@@ -91,6 +99,8 @@ resource "aws_lambda_function" "cisa_kev" {
   environment {
     variables = local.ingestion_env_common
   }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
 data "archive_file" "abuseipdb_enrich_zip" {
@@ -100,12 +110,14 @@ data "archive_file" "abuseipdb_enrich_zip" {
 }
 
 resource "aws_lambda_function" "abuseipdb_enrich" {
-  function_name    = "${var.project_name}-abuseipdb-enrich"
-  role             = aws_iam_role.lambda_exec.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  architectures    = ["x86_64"]
-  timeout          = 30
+  function_name = local.lambda_function_names.abuseipdb_enrich
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  architectures = ["x86_64"]
+  # One sequential AbuseIPDB call per IP, up to MAX_IPS_PER_RUN (400) per run - see
+  # ingestion/abuseipdb_enrich/handler.py. 600s leaves plenty of headroom.
+  timeout          = 600
   filename         = data.archive_file.abuseipdb_enrich_zip.output_path
   source_code_hash = data.archive_file.abuseipdb_enrich_zip.output_base64sha256
   layers           = [aws_lambda_layer_version.deps.arn]
@@ -116,6 +128,8 @@ resource "aws_lambda_function" "abuseipdb_enrich" {
       ABUSEIPDB_API_KEY = var.abuseipdb_api_key
     }
   }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
 data "archive_file" "normalizer_zip" {
@@ -125,12 +139,16 @@ data "archive_file" "normalizer_zip" {
 }
 
 resource "aws_lambda_function" "normalizer" {
-  function_name    = "${var.project_name}-normalizer"
-  role             = aws_iam_role.lambda_exec.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  architectures    = ["x86_64"]
-  timeout          = 60
+  function_name = local.lambda_function_names.normalizer
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  architectures = ["x86_64"]
+  # The very first CISA KEV pull writes ~1,650 items against 12 provisioned WCU, and
+  # batch_writer sits in a retry/backoff loop while DynamoDB throttles it. Steady-state
+  # runs finish in seconds (the watermark filters nearly everything out), but the cold
+  # backfill needs the headroom.
+  timeout          = 300
   filename         = data.archive_file.normalizer_zip.output_path
   source_code_hash = data.archive_file.normalizer_zip.output_base64sha256
   layers           = [aws_lambda_layer_version.deps.arn]
@@ -138,8 +156,12 @@ resource "aws_lambda_function" "normalizer" {
   environment {
     variables = {
       IOC_TABLE = aws_dynamodb_table.iocs.name
+      # Also needed for the per-feed watermark objects under _state/ (common/feed_state.py).
+      LANDING_BUCKET = aws_s3_bucket.landing.bucket
     }
   }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
 resource "aws_lambda_permission" "allow_s3_invoke_normalizer" {
@@ -148,6 +170,9 @@ resource "aws_lambda_permission" "allow_s3_invoke_normalizer" {
   function_name = aws_lambda_function.normalizer.function_name
   principal     = "s3.amazonaws.com"
   source_arn    = aws_s3_bucket.landing.arn
+  # S3 bucket ARNs contain no account ID, so source_arn alone doesn't pin the caller to
+  # this account. source_account closes that confused-deputy gap.
+  source_account = data.aws_caller_identity.current.account_id
 }
 
 data "archive_file" "api_zip" {
@@ -157,7 +182,7 @@ data "archive_file" "api_zip" {
 }
 
 resource "aws_lambda_function" "api" {
-  function_name    = "${var.project_name}-api"
+  function_name    = local.lambda_function_names.api
   role             = aws_iam_role.lambda_exec.arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.12"
@@ -171,4 +196,6 @@ resource "aws_lambda_function" "api" {
       IOC_TABLE = aws_dynamodb_table.iocs.name
     }
   }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
 }

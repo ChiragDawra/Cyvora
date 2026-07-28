@@ -1,0 +1,99 @@
+name: Deploy
+
+# Applies the Terraform stack and publishes the frontend. Runs only on main, only after
+# CI has passed, and authenticates via GitHub OIDC (see infra/github_oidc.tf) - there are
+# no long-lived AWS keys stored in this repo.
+#
+# Required repository configuration (Settings > Secrets and variables > Actions):
+#   Variable AWS_ROLE_ARN        - the github_actions_role_arn Terraform output
+#   Secret   ABUSECH_AUTH_KEY    - abuse.ch Auth-Key
+#   Secret   ABUSEIPDB_API_KEY   - AbuseIPDB API key
+#   Secret   BUDGET_ALERT_EMAIL  - email for the Budgets and CloudWatch alarms
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Terraform state takes one writer at a time.
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read
+
+jobs:
+  deploy:
+    name: Terraform apply + frontend publish
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # lambda.tf's archive_file reads this directory - it has to exist before init.
+      - name: Build Lambda layer
+        run: ./ingestion/build_layer.sh
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init
+
+      - name: Terraform apply
+        working-directory: infra
+        env:
+          TF_VAR_abusech_auth_key: ${{ secrets.ABUSECH_AUTH_KEY }}
+          TF_VAR_abuseipdb_api_key: ${{ secrets.ABUSEIPDB_API_KEY }}
+          TF_VAR_budget_alert_email: ${{ secrets.BUDGET_ALERT_EMAIL }}
+        run: terraform apply -auto-approve
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Same three steps as scripts/deploy_frontend.sh, inlined so the workflow log shows
+      # each one separately. NEXT_PUBLIC_API_URL must be set at build time - the app is a
+      # static export, so the URL is baked into the bundle.
+      - name: Build frontend against the live API
+        working-directory: frontend
+        run: |
+          API_URL="$(terraform -chdir=../infra output -raw api_url)"
+          echo "Building against $API_URL"
+          NEXT_PUBLIC_API_URL="$API_URL" npm run build
+
+      - name: Publish to S3
+        run: |
+          BUCKET="$(terraform -chdir=infra output -raw frontend_bucket_name)"
+          aws s3 sync frontend/out/ "s3://$BUCKET" --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          DIST="$(terraform -chdir=infra output -raw cloudfront_distribution_id)"
+          aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/*"
+
+      - name: Summary
+        run: |
+          echo "Live at https://$(terraform -chdir=infra output -raw cloudfront_domain)" >> "$GITHUB_STEP_SUMMARY"

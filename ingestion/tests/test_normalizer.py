@@ -1,5 +1,5 @@
 from common.schema import IOCType
-from normalizer.handler import _parse_cisa_kev, _parse_feodo, _parse_urlhaus
+from normalizer.handler import _parse_cisa_kev, _parse_feodo, _parse_urlhaus, _url_host_ip
 
 # Fixtures below mirror real, live-authenticated payload shapes confirmed 2026-07-26/27
 # (see normalizer/handler.py's module docstring) for all three feeds.
@@ -91,7 +91,6 @@ def test_parse_feodo_unknown_country_leaves_geo_none():
 
 def test_parse_urlhaus():
     iocs = _parse_urlhaus(URLHAUS_RAW)
-    assert len(iocs) == 1
     ioc = iocs[0]
     assert ioc.ioc_type == IOCType.URL
     assert ioc.value == "http://115.61.112.57:41776/bin.sh"
@@ -104,3 +103,55 @@ def test_parse_urlhaus_tags_present():
     raw = {"urls": [{"url": "http://x.test/a", "date_added": "2026-01-01", "tags": ["exe", "Emotet"]}]}
     ioc = _parse_urlhaus(raw)[0]
     assert ioc.tags == ["exe", "Emotet"]
+
+
+def test_parse_urlhaus_emits_ip_ioc_for_ip_hosted_url():
+    """URLs can't be plotted; the IPs they're hosted on can, once AbuseIPDB geo-locates them."""
+    iocs = _parse_urlhaus(URLHAUS_RAW)
+    assert len(iocs) == 2
+
+    ip_ioc = next(i for i in iocs if i.ioc_type == IOCType.IP)
+    assert ip_ioc.value == "115.61.112.57"  # port stripped
+    assert ip_ioc.source_feed == "urlhaus"
+    assert ip_ioc.first_seen == "2026-07-27 05:02:08 UTC"
+
+
+def test_parse_urlhaus_domain_url_yields_no_ip_ioc():
+    raw = {"urls": [{"url": "http://evil.test/a.exe", "date_added": "2026-01-01", "tags": []}]}
+    iocs = _parse_urlhaus(raw)
+    assert len(iocs) == 1
+    assert iocs[0].ioc_type == IOCType.URL
+
+
+def test_url_host_ip_rejects_non_ip_hosts():
+    assert _url_host_ip("http://115.61.112.57:41776/bin.sh") == "115.61.112.57"
+    assert _url_host_ip("http://evil.test/a") is None
+    assert _url_host_ip("http://[2001:db8::1]/a") is None  # v6 - AbuseIPDB path is v4-only here
+    assert _url_host_ip("not a url") is None
+
+
+def test_new_since_watermark_filters_already_seen(monkeypatch):
+    """The watermark is what keeps the pipeline inside the DynamoDB free tier."""
+    import normalizer.handler as h
+
+    monkeypatch.setattr(h, "get_state", lambda name: {"watermark": "2026-07-27 05:00:00 UTC"})
+
+    iocs = _parse_urlhaus(URLHAUS_RAW)  # date_added 2026-07-27 05:02:08 UTC - newer
+    fresh, watermark = h._new_since_watermark("urlhaus", iocs)
+    assert len(fresh) == len(iocs)
+    assert watermark == "2026-07-27 05:02:08 UTC"
+
+    # Re-running against the same payload once the watermark has caught up writes nothing.
+    monkeypatch.setattr(h, "get_state", lambda name: {"watermark": watermark})
+    fresh, _ = h._new_since_watermark("urlhaus", iocs)
+    assert fresh == []
+
+
+def test_new_since_watermark_first_run_writes_everything(monkeypatch):
+    import normalizer.handler as h
+
+    monkeypatch.setattr(h, "get_state", lambda name: None)
+    iocs = _parse_urlhaus(URLHAUS_RAW)
+    fresh, watermark = h._new_since_watermark("urlhaus", iocs)
+    assert len(fresh) == len(iocs)
+    assert watermark == "2026-07-27 05:02:08 UTC"
