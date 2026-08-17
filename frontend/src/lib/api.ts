@@ -13,7 +13,11 @@ export async function fetchIocPoints(): Promise<IOCPoint[]> {
   if (!API_URL) {
     throw new Error("NEXT_PUBLIC_API_URL is not set");
   }
-  const res = await fetch(`${API_URL}/iocs`);
+  // Only "ip" IOCs ever get geo (see ingestion/abuseipdb_enrich), and enrichment always
+  // lags behind ingestion volume - a plain, recency-sorted /iocs call would return newest
+  // IOCs that essentially never have geo yet. ?geo=true asks the API to page backward
+  // through the GSI until it finds enough geo-tagged points instead.
+  const res = await fetch(`${API_URL}/iocs?type=ip&geo=true`);
   if (!res.ok) {
     throw new Error(`API returned ${res.status}`);
   }

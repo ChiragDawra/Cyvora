@@ -7,6 +7,20 @@ A live, self-hostable open-source-threat-intel aggregation and anomaly-flagging 
 - [`GPT_Analysis.md`](./GPT_Analysis.md) — original broad system-design research (reference only)
 - [`Claude_Analysis.md`](./Claude_Analysis.md) — feasibility critique and the staged MVP plan the guide is built from
 
+## Live
+
+**https://d2w3ir83bk8ei4.cloudfront.net**
+
+| Globe view | 2D map view |
+|---|---|
+| ![Globe view](./docs/images/globe-view.jpg) | ![2D map view](./docs/images/map-view.jpg) |
+
+Plotted points are real, geo-tagged malicious IPs pulled live from URLhaus/Feodo and
+enriched via AbuseIPDB. The API's `?geo=true` param pages backward through the
+type-time GSI (see `backend/api/handler.py`) to always return geo-tagged IOCs, since the
+daily enrichment job (capped at 400 IPs/day) runs behind ingestion volume and the newest
+IOCs rarely have `geo` yet.
+
 ## Architecture
 
 ```
@@ -79,16 +93,10 @@ scripts/      Frontend build-and-publish helper
 
 ## Status
 
-**v1 deployed.** 60 of 61 Terraform resources are live: all three feeds on schedule, the
-S3 → normalizer → DynamoDB pipeline, the API, and both buckets.
+**v1 fully deployed and live.** All 61 Terraform resources are up: all three feeds on
+schedule, the S3 → normalizer → DynamoDB pipeline, the API, and both buckets. CloudFront
+cleared AWS's new-account verification and is serving the frontend; the pipeline has been
+observed running with 18,000+ IOCs written to `cyvora-iocs`.
 
-Two items remain, tracked in `PHASE1_ISSUES.md`:
-
-- The **CloudFront distribution** is blocked pending AWS account verification — a
-  new-account restriction, not a configuration problem. Until it clears there's no public
-  HTTPS URL.
-- The first **live scheduled pipeline run** hasn't been observed yet. The feed logic is
-  verified against live data and covered by 20 tests; what's unconfirmed is the deployed
-  write path.
-
-See `EXECUTION_GUIDE.md` for the full checklist and the verification commands.
+See `EXECUTION_GUIDE.md` for the full checklist and `PHASE1_ISSUES.md` for the cost audit
+and verification commands.

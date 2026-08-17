@@ -9,6 +9,14 @@ Query when ?type= is given, or one Query per known type (merged, most-recent-fir
 when it's omitted. Doesn't import common.schema's IOCType to avoid depending on the
 ingestion Lambda layer for 5 constant strings - this function stays independently
 deployable.
+
+?geo=true switches to _query_type_geo: the daily AbuseIPDB enrichment job (which sets
+`geo`) is capped well below ingestion volume, so the newest IOCs the plain query returns
+almost never have it yet - the map/globe would render empty despite plenty of enriched
+IOCs existing further back in time. _query_type_geo pages backward through the same
+time-sorted GSI, filtering for `geo`, until it collects enough points or hits the page
+cap - same "Limit applies before FilterExpression" pagination fix as
+ingestion/abuseipdb_enrich/handler.py's _get_unenriched_ips.
 """
 from __future__ import annotations
 
@@ -17,12 +25,14 @@ import os
 from decimal import Decimal
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 _dynamodb = boto3.resource("dynamodb")
 
 _IOC_TYPES = ["ip", "domain", "url", "hash", "cve"]
 _QUERY_LIMIT = 100
+_GEO_PAGE_SIZE = 200
+_GEO_MAX_PAGES = 10
 
 
 def _json_default(value):
@@ -58,6 +68,30 @@ def _query_type(table, ioc_type: str) -> list[dict]:
     return result.get("Items", [])
 
 
+def _query_type_geo(table, ioc_type: str) -> list[dict]:
+    items: list[dict] = []
+    kwargs = {
+        "IndexName": "type-time-index",
+        "KeyConditionExpression": Key("ioc_type").eq(ioc_type),
+        "FilterExpression": Attr("geo").exists(),
+        "ScanIndexForward": False,
+        "Limit": _GEO_PAGE_SIZE,
+    }
+
+    for _ in range(_GEO_MAX_PAGES):
+        result = table.query(**kwargs)
+        items.extend(result.get("Items", []))
+        if len(items) >= _QUERY_LIMIT:
+            return items[:_QUERY_LIMIT]
+
+        last_key = result.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        kwargs["ExclusiveStartKey"] = last_key
+
+    return items
+
+
 def lambda_handler(event, context):
     table = _dynamodb.Table(os.environ["IOC_TABLE"])
 
@@ -73,11 +107,13 @@ def lambda_handler(event, context):
 
     query_params = event.get("queryStringParameters") or {}
     ioc_type = query_params.get("type")
+    geo_only = query_params.get("geo") in ("1", "true", "True")
+    query_fn = _query_type_geo if geo_only else _query_type
 
     if ioc_type:
-        items = _query_type(table, ioc_type)
+        items = query_fn(table, ioc_type)
     else:
-        items = [item for t in _IOC_TYPES for item in _query_type(table, t)]
+        items = [item for t in _IOC_TYPES for item in query_fn(table, t)]
         items.sort(key=lambda i: i.get("ingested_at", 0), reverse=True)
 
     return _response(200, {"items": items})
