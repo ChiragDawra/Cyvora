@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import ThreatGlobe from "@/components/ThreatGlobe";
 import ThreatMap2D from "@/components/ThreatMap2D";
-import { apiConfigured, fetchIocPoints } from "@/lib/api";
-import type { IOCPoint } from "@/lib/types";
+import ClusterView from "@/components/ClusterView";
+import { apiConfigured, fetchAlerts, fetchIocPoints } from "@/lib/api";
+import type { Alert, IOCPoint } from "@/lib/types";
 
 const PLACEHOLDER_POINTS: IOCPoint[] = [
   { id: "1", lat: 52.52, lng: 13.405, label: "Placeholder IOC — Berlin" },
@@ -13,10 +14,11 @@ const PLACEHOLDER_POINTS: IOCPoint[] = [
 ];
 
 export default function Home() {
-  const [view, setView] = useState<"globe" | "2d">("globe");
+  const [view, setView] = useState<"globe" | "2d" | "clusters">("globe");
   const [points, setPoints] = useState<IOCPoint[]>([]);
   const [usingPlaceholder, setUsingPlaceholder] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
 
   useEffect(() => {
     if (!apiConfigured()) {
@@ -35,6 +37,8 @@ export default function Home() {
         setUsingPlaceholder(true);
       })
       .finally(() => setLoading(false));
+
+    fetchAlerts().then(setAlerts); // empty on any failure - see lib/api.ts's fetchAlerts
   }, []);
 
   return (
@@ -45,6 +49,11 @@ export default function Home() {
           {usingPlaceholder && (
             <span className="rounded-full bg-amber-500/20 px-3 py-1 text-xs text-amber-300">
               Placeholder data — API not configured or unreachable
+            </span>
+          )}
+          {alerts.length > 0 && (
+            <span className="rounded-full bg-red-500/20 px-3 py-1 text-xs text-red-300">
+              {alerts.length} spike alert{alerts.length === 1 ? "" : "s"}
             </span>
           )}
         </div>
@@ -61,13 +70,31 @@ export default function Home() {
           >
             2D map
           </button>
+          <button
+            onClick={() => setView("clusters")}
+            className={`rounded-full px-4 py-1.5 ${view === "clusters" ? "bg-white text-black" : "bg-zinc-800"}`}
+          >
+            Clusters
+          </button>
         </div>
       </header>
-      <main className="flex-1">
+      <main className="relative flex-1">
         {loading ? null : view === "globe" ? (
           <ThreatGlobe points={points} />
-        ) : (
+        ) : view === "2d" ? (
           <ThreatMap2D points={points} />
+        ) : (
+          <ClusterView points={points} />
+        )}
+        {alerts.length > 0 && (
+          <div className="absolute top-4 right-4 max-h-64 w-72 overflow-y-auto rounded-lg bg-zinc-900/90 p-3 text-xs">
+            <div className="mb-2 font-semibold text-zinc-300">Recent spike alerts</div>
+            {alerts.map((a) => (
+              <div key={a.alert_id} className="mb-2 rounded-full bg-red-500/10 px-3 py-1.5 text-red-300">
+                {a.ioc_type} — {a.count} on {a.date} (z={a.z_score})
+              </div>
+            ))}
+          </div>
         )}
       </main>
     </div>

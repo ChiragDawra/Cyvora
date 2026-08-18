@@ -1,4 +1,4 @@
-import type { IOCPoint, RawIOC } from "./types";
+import type { Alert, IOCPoint, RawIOC } from "./types";
 
 // Baked in at build time (static export - see next.config.ts's output: "export").
 // Set from the api_url Terraform output after `terraform apply` in infra/, e.g.:
@@ -23,6 +23,21 @@ export async function fetchIocPoints(): Promise<IOCPoint[]> {
   }
   const body: { items: RawIOC[] } = await res.json();
   return rawIocsToPoints(body.items);
+}
+
+// Empty on any failure (missing config, network, non-2xx) - the alerts panel treats
+// that the same as "no alerts", not an error state; spike alerts are a nice-to-have,
+// not core to the map rendering.
+export async function fetchAlerts(): Promise<Alert[]> {
+  if (!API_URL) return [];
+  try {
+    const res = await fetch(`${API_URL}/alerts`);
+    if (!res.ok) return [];
+    const body: { items: Alert[] } = await res.json();
+    return body.items;
+  } catch {
+    return [];
+  }
 }
 
 // Only IOCs with geo set can be plotted - see ingestion/common/geo.py's coverage and
