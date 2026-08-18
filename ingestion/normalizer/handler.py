@@ -18,7 +18,9 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import time
 import urllib.parse
+from collections import Counter
 
 import boto3
 
@@ -28,6 +30,9 @@ from common.schema import IOC, IOCType
 
 _s3 = boto3.client("s3")
 _dynamodb = boto3.resource("dynamodb")
+
+# How many days of daily per-type counts anomaly_detector needs to look back over.
+_ANOMALY_WINDOW_DAYS = 30
 
 
 def _url_host_ip(url: str) -> str | None:
@@ -151,10 +156,38 @@ def _new_since_watermark(feed_name: str, iocs: list[IOC]) -> tuple[list[IOC], st
     return fresh, new_watermark
 
 
+def _record_daily_counts(counts_by_type: Counter[str]) -> None:
+    """Appends today's per-ioc_type write count to a rolling window in S3.
+
+    anomaly_detector/handler.py reads this to spot per-category ingestion spikes,
+    without ever touching the already-maxed-out DynamoDB provisioned capacity (see
+    infra/dynamodb.tf - 24/25 WCU, 25/25 RCU account-wide, no headroom for a new read
+    pattern against the main table). Written here, as a byproduct of a write the
+    normalizer is already doing, rather than queried after the fact.
+    """
+    if not counts_by_type:
+        return
+
+    now = time.time()
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(now - _ANOMALY_WINDOW_DAYS * 86400))
+    state = get_state("anomaly_counts") or {}
+
+    for ioc_type, count in counts_by_type.items():
+        series = state.setdefault(ioc_type, {})
+        series[today] = series.get(today, 0) + count
+        # Trim to the trailing window so this object never grows unbounded.
+        for date in [d for d in series if d < cutoff]:
+            del series[date]
+
+    put_state("anomaly_counts", state)
+
+
 def lambda_handler(event, context):
     table = _dynamodb.Table(os.environ["IOC_TABLE"])
     written = 0
     skipped = 0
+    written_by_type: Counter[str] = Counter()
 
     for record in event["Records"]:
         bucket = record["s3"]["bucket"]["name"]
@@ -178,10 +211,13 @@ def lambda_handler(event, context):
             for ioc in fresh:
                 batch.put_item(Item=ioc.to_dynamo_item())
                 written += 1
+                written_by_type[ioc.ioc_type.value] += 1
 
         # Only advance the watermark after the writes land - a mid-batch failure re-runs
         # the whole object rather than silently dropping records.
         if new_watermark:
             put_state(feed_name + ".watermark", {"watermark": new_watermark})
+
+    _record_daily_counts(written_by_type)
 
     return {"written": written, "skipped_already_seen": skipped}

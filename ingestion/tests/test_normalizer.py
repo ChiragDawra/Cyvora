@@ -1,4 +1,7 @@
+from collections import Counter
+
 from common.schema import IOCType
+import normalizer.handler as normalizer_handler
 from normalizer.handler import _parse_cisa_kev, _parse_feodo, _parse_urlhaus, _url_host_ip
 
 # Fixtures below mirror real, live-authenticated payload shapes confirmed 2026-07-26/27
@@ -155,3 +158,39 @@ def test_new_since_watermark_first_run_writes_everything(monkeypatch):
     fresh, watermark = h._new_since_watermark("urlhaus", iocs)
     assert len(fresh) == len(iocs)
     assert watermark == "2026-07-27 05:02:08 UTC"
+
+
+def test_record_daily_counts_appends_to_todays_bucket(monkeypatch):
+    """anomaly_detector/handler.py reads exactly this state to spot ingestion spikes."""
+    monkeypatch.setattr(normalizer_handler.time, "time", lambda: 1786800000)
+    monkeypatch.setattr(normalizer_handler, "get_state", lambda name: None)
+
+    written = {}
+    monkeypatch.setattr(normalizer_handler, "put_state", lambda name, state: written.update({name: state}))
+
+    normalizer_handler._record_daily_counts(Counter({"ip": 5, "url": 2}))
+
+    assert written["anomaly_counts"]["ip"] == {"2026-08-15": 5}
+    assert written["anomaly_counts"]["url"] == {"2026-08-15": 2}
+
+
+def test_record_daily_counts_trims_old_days_and_accumulates_same_day(monkeypatch):
+    monkeypatch.setattr(normalizer_handler.time, "time", lambda: 1786800000)
+
+    existing = {"ip": {"2026-08-15": 3, "2020-01-01": 9}}  # 2020-01-01 is far outside the window
+    monkeypatch.setattr(normalizer_handler, "get_state", lambda name: existing)
+
+    written = {}
+    monkeypatch.setattr(normalizer_handler, "put_state", lambda name, state: written.update({name: state}))
+
+    normalizer_handler._record_daily_counts(Counter({"ip": 4}))
+
+    assert written["anomaly_counts"]["ip"] == {"2026-08-15": 7}  # 3 + 4, same-day accumulation
+    assert "2020-01-01" not in written["anomaly_counts"]["ip"]  # trimmed
+
+
+def test_record_daily_counts_noop_on_empty_counts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(normalizer_handler, "put_state", lambda name, state: calls.append(state))
+    normalizer_handler._record_daily_counts(Counter())
+    assert calls == []
