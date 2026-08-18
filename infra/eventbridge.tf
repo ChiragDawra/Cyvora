@@ -24,6 +24,7 @@ data "aws_iam_policy_document" "scheduler_invoke_lambda" {
       aws_lambda_function.feodo.arn,
       aws_lambda_function.cisa_kev.arn,
       aws_lambda_function.abuseipdb_enrich.arn,
+      aws_lambda_function.anomaly_detector.arn,
     ]
   }
 }
@@ -103,6 +104,24 @@ resource "aws_scheduler_schedule" "abuseipdb_enrich" {
 
   target {
     arn      = aws_lambda_function.abuseipdb_enrich.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
+}
+
+# Runs once daily, after normalizer has had the whole day to accumulate counts in
+# _state/anomaly_counts.json (see ingestion/anomaly_detector/handler.py).
+resource "aws_scheduler_schedule" "anomaly_detector" {
+  name       = "${var.project_name}-anomaly-detector"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression = "rate(1 day)"
+
+  target {
+    arn      = aws_lambda_function.anomaly_detector.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
   }
 }

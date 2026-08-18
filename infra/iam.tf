@@ -51,6 +51,26 @@ data "aws_iam_policy_document" "lambda_data_access" {
       "${aws_dynamodb_table.iocs.arn}/index/*",
     ]
   }
+
+  # anomaly_detector writes flagged spikes; api's GET /alerts route reads them back.
+  statement {
+    sid = "AlertsTableReadWrite"
+    actions = [
+      "dynamodb:PutItem",
+      "dynamodb:GetItem",
+      "dynamodb:Scan",
+    ]
+    resources = [aws_dynamodb_table.alerts.arn]
+  }
+
+  # anomaly_detector publishes spike alerts to the existing alerts topic (cloudwatch.tf) -
+  # CloudWatch Alarms publish to it as a native AWS service integration and never needed
+  # this, so it wasn't granted anywhere until now.
+  statement {
+    sid       = "PublishAlerts"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_data_access" {

@@ -66,3 +66,29 @@ resource "aws_dynamodb_table" "iocs" {
     read_capacity  = 20
   }
 }
+
+# Spike-anomaly alerts, written by ingestion/anomaly_detector/handler.py and read by
+# backend/api/handler.py's GET /alerts. Deliberately a SEPARATE table from cyvora-iocs:
+# the account-wide always-free DynamoDB allowance (25 WCU + 25 RCU) is a single pool
+# shared across every provisioned table, and the iocs table + its GSI already draw 24/25
+# WCU and 25/25 RCU from it - there is no provisioned headroom left.
+#
+# PAY_PER_REQUEST here instead: volume is a handful of rows a day at most (anomaly
+# detection runs once daily, most days flag nothing), so on-demand billing rounds to
+# fractions of a cent - the same cost/simplicity tradeoff already made for API Gateway
+# in PHASE1_ISSUES.md's A7. The $5 Budgets alarm remains the backstop.
+resource "aws_dynamodb_table" "alerts" {
+  name         = "${var.project_name}-alerts"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "alert_id"
+
+  attribute {
+    name = "alert_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+}

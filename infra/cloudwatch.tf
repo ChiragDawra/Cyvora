@@ -25,6 +25,7 @@ locals {
     abuseipdb_enrich = "${var.project_name}-abuseipdb-enrich"
     normalizer       = "${var.project_name}-normalizer"
     api              = "${var.project_name}-api"
+    anomaly_detector = "${var.project_name}-anomaly-detector"
   }
 }
 

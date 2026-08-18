@@ -164,6 +164,37 @@ resource "aws_lambda_function" "normalizer" {
   depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
+data "archive_file" "anomaly_detector_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../ingestion/anomaly_detector/handler.py"
+  output_path = "${path.module}/../ingestion/build/anomaly_detector.zip"
+}
+
+resource "aws_lambda_function" "anomaly_detector" {
+  function_name = local.lambda_function_names.anomaly_detector
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  architectures = ["x86_64"]
+  timeout       = 30
+  # Reads the per-type counters normalizer/handler.py already writes to S3 - stdlib
+  # `statistics` only, no numpy, so this uses the same shared layer as every other
+  # ingestion Lambda without needing to rebuild it.
+  filename         = data.archive_file.anomaly_detector_zip.output_path
+  source_code_hash = data.archive_file.anomaly_detector_zip.output_base64sha256
+  layers           = [aws_lambda_layer_version.deps.arn]
+
+  environment {
+    variables = {
+      LANDING_BUCKET   = aws_s3_bucket.landing.bucket
+      ALERTS_TABLE     = aws_dynamodb_table.alerts.name
+      ALERTS_TOPIC_ARN = aws_sns_topic.alerts.arn
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
+}
+
 resource "aws_lambda_permission" "allow_s3_invoke_normalizer" {
   statement_id  = "AllowS3Invoke"
   action        = "lambda:InvokeFunction"
@@ -193,7 +224,8 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      IOC_TABLE = aws_dynamodb_table.iocs.name
+      IOC_TABLE    = aws_dynamodb_table.iocs.name
+      ALERTS_TABLE = aws_dynamodb_table.alerts.name
     }
   }
 
