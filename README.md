@@ -51,6 +51,20 @@ EventBridge Scheduler                     ┌───────────�
    daily ──────────────▶│ abuseipdb     │  confidence score
                         │ enrich Lambda │  + country geo
                         └───────────────┘
+
+  normalizer also writes per-type daily counts to S3, which the detector reads:
+
+                        ┌─────────────────┐
+                        │ S3 _state/      │
+                        │ anomaly_counts  │
+                        └────────┬────────┘
+                                 ▼
+   daily ──────────────▶┌─────────────────┐───▶ SNS alerts topic ──▶ email
+                        │ anomaly_detector│
+                        │ Lambda (z > 3)  │───▶ DynamoDB cyvora-alerts
+                        └─────────────────┘         │  (on-demand, 30-day TTL)
+                                                    ▼
+                                              GET /alerts ──▶ Browser
 ```
 
 Every arrow is Terraform-managed. CI (`terraform validate` + tests) runs on every push;
@@ -65,13 +79,24 @@ subset of IP IOCs through AbuseIPDB, adding a confidence score and country-level
 API Lambda serves recent IOCs out of a GSI, and the statically-exported Next.js app plots
 the ones that have geo.
 
+**Anomaly detection.** The normalizer also records how many IOCs of each type it wrote,
+appending to a rolling 30-day series in S3 — not DynamoDB, since `cyvora-iocs` has no
+spare capacity (see *Cost design*). A daily Lambda reads that series and, for any type
+with at least 7 days of baseline, flags today's count when its z-score exceeds 3. Flagged
+spikes are published to SNS and recorded in `cyvora-alerts`, which the frontend reads
+through `GET /alerts`. This is deliberately statistical, not predictive: it says *this
+volume is unusual against its own history*, and nothing about what happens next.
+
 ## Cost design
 
 The whole thing is built to run at effectively **$0/month**, and that constraint drove real
 architectural decisions rather than being an afterthought:
 
 - **DynamoDB is provisioned, not on-demand.** The always-free 25 WCU / 25 RCU applies only
-  to provisioned capacity — on-demand has no free allowance at all.
+  to provisioned capacity — on-demand has no free allowance at all. The one exception is
+  `cyvora-alerts`: that free pool is account-wide rather than per-table and `cyvora-iocs`
+  already holds nearly all of it, so a handful of alert rows a day go on-demand, where
+  they round to fractions of a cent.
 - **Feeds are watermarked.** URLhaus re-serves the same ~550 URLs on every poll; writing
   all of them every time was a ~$12/month line item on its own.
 - **Everything expires.** 90-day TTL on IOCs, 7-day expiry on raw pulls, 7-day log
@@ -87,7 +112,7 @@ architectural decisions rather than being an afterthought:
 infra/        Terraform (all AWS resources)
 ingestion/    Feed-puller, normalizer, and enrichment Lambdas (Python)
 backend/      API Lambda behind API Gateway (Python)
-frontend/     Next.js app, static export (globe + 2D map views)
+frontend/     Next.js app, static export (globe, 2D map, and DBSCAN cluster views)
 scripts/      Frontend build-and-publish helper
 ```
 
@@ -97,6 +122,13 @@ scripts/      Frontend build-and-publish helper
 schedule, the S3 → normalizer → DynamoDB pipeline, the API, and both buckets. CloudFront
 cleared AWS's new-account verification and is serving the frontend; the pipeline has been
 observed running with 18,000+ IOCs written to `cyvora-iocs`.
+
+**v2 in progress.** Three of four items are deployed: the statistical anomaly detector,
+SNS spike alerts backed by the `cyvora-alerts` table and `GET /alerts`, and the
+client-side DBSCAN Clusters view. The detector currently reports zero anomalies, which is
+correct — it needs 7 days of baseline history before it will flag anything, and the
+counter series only started accumulating recently. Remaining: an AlienVault OTX feed as a
+fourth source, which needs a free OTX API key and at least one subscribed pulse.
 
 See `EXECUTION_GUIDE.md` for the full checklist and `PHASE1_ISSUES.md` for the cost audit
 and verification commands.
