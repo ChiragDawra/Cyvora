@@ -5,8 +5,10 @@ TypeError on Decimal - so the handler returned 500 for every request until _json
 was added.
 """
 import json
+import os
 from decimal import Decimal
 
+import api.handler as api_handler
 from api.handler import _query_type_geo, _response
 
 
@@ -82,3 +84,45 @@ def test_response_still_rejects_genuinely_unserializable_types():
         assert "Weird" in str(exc)
     else:
         raise AssertionError("expected TypeError")
+
+
+class _FakeAlertsTable:
+    def __init__(self, items):
+        self._items = items
+
+    def scan(self):
+        return {"Items": self._items}
+
+
+def test_get_alerts_route_returns_newest_first(monkeypatch):
+    os.environ["ALERTS_TABLE"] = "cyvora-alerts-test"
+    items = [
+        {"alert_id": "a", "created_at": 100},
+        {"alert_id": "b", "created_at": 300},
+        {"alert_id": "c", "created_at": 200},
+    ]
+    monkeypatch.setattr(
+        api_handler,
+        "_dynamodb",
+        type("D", (), {"Table": lambda self, name: _FakeAlertsTable(items)})(),
+    )
+
+    result = api_handler.lambda_handler({"rawPath": "/alerts"}, None)
+
+    body = json.loads(result["body"])
+    assert [i["alert_id"] for i in body["items"]] == ["b", "c", "a"]
+
+
+def test_get_alerts_route_caps_at_alerts_limit(monkeypatch):
+    os.environ["ALERTS_TABLE"] = "cyvora-alerts-test"
+    items = [{"alert_id": str(i), "created_at": i} for i in range(30)]
+    monkeypatch.setattr(
+        api_handler,
+        "_dynamodb",
+        type("D", (), {"Table": lambda self, name: _FakeAlertsTable(items)})(),
+    )
+
+    result = api_handler.lambda_handler({"rawPath": "/alerts"}, None)
+
+    body = json.loads(result["body"])
+    assert len(body["items"]) == api_handler._ALERTS_LIMIT

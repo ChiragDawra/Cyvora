@@ -1,8 +1,9 @@
 """API Gateway (HTTP API, Lambda proxy integration) handler serving IOC data to the frontend.
 
-Routes (v1 scope):
+Routes:
   GET /iocs            -> list recent IOCs (optionally filtered by ?type=ip|domain|url|hash|cve)
   GET /iocs/{ioc_id}    -> a single IOC by id
+  GET /alerts           -> recent anomaly-spike alerts (see ingestion/anomaly_detector)
 
 Uses the type-time-index GSI (see infra/dynamodb.tf) instead of a table scan: a single
 Query when ?type= is given, or one Query per known type (merged, most-recent-first)
@@ -33,6 +34,7 @@ _IOC_TYPES = ["ip", "domain", "url", "hash", "cve"]
 _QUERY_LIMIT = 100
 _GEO_PAGE_SIZE = 200
 _GEO_MAX_PAGES = 10
+_ALERTS_LIMIT = 20
 
 
 def _json_default(value):
@@ -92,7 +94,20 @@ def _query_type_geo(table, ioc_type: str) -> list[dict]:
     return items
 
 
+def _list_alerts() -> list[dict]:
+    """Low-volume table (a handful of rows/day at most - see infra/dynamodb.tf's
+    aws_dynamodb_table.alerts comment), so a plain scan is fine; no GSI needed."""
+    table = _dynamodb.Table(os.environ["ALERTS_TABLE"])
+    result = table.scan()
+    items = result.get("Items", [])
+    items.sort(key=lambda i: i.get("created_at", 0), reverse=True)
+    return items[:_ALERTS_LIMIT]
+
+
 def lambda_handler(event, context):
+    if event.get("rawPath", "").rstrip("/") == "/alerts":
+        return _response(200, {"items": _list_alerts()})
+
     table = _dynamodb.Table(os.environ["IOC_TABLE"])
 
     path_params = event.get("pathParameters") or {}

@@ -29,6 +29,12 @@ resource "aws_apigatewayv2_route" "get_ioc" {
   target    = "integrations/${aws_apigatewayv2_integration.api.id}"
 }
 
+resource "aws_apigatewayv2_route" "list_alerts" {
+  api_id    = aws_apigatewayv2_api.api.id
+  route_key = "GET /alerts"
+  target    = "integrations/${aws_apigatewayv2_integration.api.id}"
+}
+
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.api.id
   name        = "$default"
