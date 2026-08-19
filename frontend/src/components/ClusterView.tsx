@@ -22,7 +22,10 @@ export default function ClusterView({ points }: { points: IOCPoint[] }) {
   return (
     <div className="relative h-full w-full">
       <ThreatMap2D points={points} colors={colors} />
-      <div className="absolute bottom-4 left-4 rounded-full bg-zinc-800/90 px-3 py-1.5 text-xs text-zinc-300">
+      {/* z-index is required, not cosmetic: Leaflet gives .leaflet-pane z-index 400 and
+          its corner controls 1000, so a sibling at z-index auto paints underneath the
+          map tiles no matter where it sits in the DOM. 1100 clears both. */}
+      <div className="absolute bottom-4 left-4 z-[1100] rounded-full bg-zinc-800/90 px-3 py-1.5 text-xs text-zinc-300">
         {clusterCount} cluster{clusterCount === 1 ? "" : "s"} found ({points.length} points)
       </div>
     </div>

@@ -85,8 +85,9 @@ export default function Home() {
         ) : (
           <ClusterView points={points} />
         )}
+        {/* z-[1100] for the same reason as the cluster legend - see ClusterView.tsx. */}
         {alerts.length > 0 && (
-          <div className="absolute top-4 right-4 max-h-64 w-72 overflow-y-auto rounded-lg bg-zinc-900/90 p-3 text-xs">
+          <div className="absolute top-4 right-4 z-[1100] max-h-64 w-72 overflow-y-auto rounded-lg bg-zinc-900/90 p-3 text-xs">
             <div className="mb-2 font-semibold text-zinc-300">Recent spike alerts</div>
             {alerts.map((a) => (
               <div key={a.alert_id} className="mb-2 rounded-full bg-red-500/10 px-3 py-1.5 text-red-300">
