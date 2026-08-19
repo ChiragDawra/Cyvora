@@ -12,6 +12,10 @@ Field names verified against live, authenticated responses (2026-07-26/27):
   Unlike Feodo, this endpoint has NO `last_online` field at all - only `date_added` -
   so first_seen and last_seen are both set from it. `tags` can be JSON `null` (not
   just absent), handled by `entry.get("tags", []) or []`.
+
+`_parse_otx` is the exception: it follows OTX's documented DirectConnect v1 schema but
+has NOT been checked against a live authenticated payload, because no OTX key existed
+when it was written. Verify it against a real landed object before relying on it.
 """
 from __future__ import annotations
 
@@ -126,10 +130,70 @@ def _parse_cisa_kev(raw: dict) -> list[IOC]:
     return iocs
 
 
+# OTX indicator types worth storing, mapped onto the common schema. Anything absent -
+# CIDR, Mutex, YARA, FilePath, email, and the rest - is skipped rather than forced into
+# an IOCType it doesn't fit. FileHash-PEHASH/IMPHASH are excluded on purpose: they
+# identify a binary's structure, not the binary, so they don't mean the same thing as
+# the content hashes and shouldn't share a type with them.
+_OTX_TYPE_MAP = {
+    "IPv4": IOCType.IP,
+    "IPv6": IOCType.IP,
+    "domain": IOCType.DOMAIN,
+    "hostname": IOCType.DOMAIN,
+    "URL": IOCType.URL,
+    "URI": IOCType.URL,
+    "FileHash-MD5": IOCType.HASH,
+    "FileHash-SHA1": IOCType.HASH,
+    "FileHash-SHA256": IOCType.HASH,
+    "CVE": IOCType.CVE,
+}
+
+
+def _parse_otx(raw: dict) -> list[IOC]:
+    """Flattens subscribed pulses into per-indicator IOCs.
+
+    OTX nests indicators inside pulses, so the same indicator can appear in several
+    pulses. That collapses naturally: ioc_id is a hash of type+value, so duplicates
+    overwrite rather than multiply (the same reason the batch writer sets
+    overwrite_by_pkeys). Which pulse won is recorded in `raw` for traceability.
+
+    Indicator timestamps are per-indicator (`created`) while the pulse's `modified` is
+    the freshest thing known about it, so those become first_seen and last_seen. Both
+    are ISO 8601 and zero-padded, which is what the watermark comparison requires.
+    """
+    iocs = []
+    for pulse in raw.get("pulses", []):
+        pulse_tags = pulse.get("tags", []) or []
+        pulse_modified = pulse.get("modified", "")
+
+        for indicator in pulse.get("indicators", []) or []:
+            ioc_type = _OTX_TYPE_MAP.get(indicator.get("type"))
+            if ioc_type is None:
+                continue
+            value = indicator.get("indicator")
+            if not value:
+                continue
+
+            created = indicator.get("created", "")
+            iocs.append(
+                IOC(
+                    ioc_type=ioc_type,
+                    value=value,
+                    source_feed="otx",
+                    first_seen=created,
+                    last_seen=pulse_modified or created,
+                    tags=pulse_tags,
+                    raw={"pulse_id": pulse.get("id"), "pulse_name": pulse.get("name"), **indicator},
+                )
+            )
+    return iocs
+
+
 _PARSERS = {
     "urlhaus": _parse_urlhaus,
     "feodo": _parse_feodo,
     "cisa_kev": _parse_cisa_kev,
+    "otx": _parse_otx,
 }
 
 
