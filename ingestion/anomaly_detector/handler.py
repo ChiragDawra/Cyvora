@@ -23,7 +23,6 @@ import boto3
 
 from common.feed_state import get_state
 
-_ANOMALY_WINDOW_DAYS = 30
 _MIN_BASELINE_DAYS = 7
 _Z_THRESHOLD = 3
 _ALERT_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -32,8 +31,11 @@ _dynamodb = boto3.resource("dynamodb")
 _sns = boto3.client("sns")
 
 
-def _detect_anomalies(state: dict) -> list[dict]:
-    today = time.strftime("%Y-%m-%d", time.gmtime())
+def _detect_anomalies(state: dict, now: float | None = None) -> list[dict]:
+    """`now` is injectable so tests can pin the UTC day rather than racing midnight:
+    a test that builds its baseline from one clock reading and asserts against another
+    fails once a day, at the boundary, for no real reason."""
+    today = time.strftime("%Y-%m-%d", time.gmtime(time.time() if now is None else now))
     anomalies = []
 
     for ioc_type, series in state.items():
