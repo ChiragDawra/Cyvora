@@ -2,8 +2,10 @@
 # plus one always-free dashboard. Error alarms are the highest-value guardrail for a
 # scheduled pipeline nobody's watching in real time.
 #
-# Six alarms sits inside CloudWatch's always-free 10; one dashboard sits inside its
-# always-free 3.
+# One alarm per Lambda (8) plus the DynamoDB throttle alarm is 9 of CloudWatch's
+# always-free 10. One more Lambda still fits; the one after that starts costing money,
+# so past that point a new function needs an alarm retired or a decision to pay. One
+# dashboard sits inside its always-free 3.
 resource "aws_sns_topic" "alerts" {
   name = "${var.project_name}-alerts"
 }
@@ -26,6 +28,7 @@ locals {
     normalizer       = "${var.project_name}-normalizer"
     api              = "${var.project_name}-api"
     anomaly_detector = "${var.project_name}-anomaly-detector"
+    otx              = "${var.project_name}-otx"
   }
 }
 

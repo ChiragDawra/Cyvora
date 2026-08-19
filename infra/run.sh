@@ -12,5 +12,6 @@ set +a
 
 export TF_VAR_abusech_auth_key="$ABUSECH_AUTH_KEY"
 export TF_VAR_abuseipdb_api_key="$ABUSEIPDB_API_KEY"
+export TF_VAR_otx_api_key="$OTX_API_KEY"
 
 terraform "$@"

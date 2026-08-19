@@ -35,3 +35,10 @@ variable "abuseipdb_api_key" {
   sensitive   = true
   # No default - supply via TF_VAR_abuseipdb_api_key, e.g. through infra/run.sh.
 }
+
+variable "otx_api_key" {
+  description = "AlienVault OTX API key, used by the otx Lambda. The account must also be subscribed to at least one pulse - /pulses/subscribed returns only what it follows."
+  type        = string
+  sensitive   = true
+  # No default - supply via TF_VAR_otx_api_key, e.g. through infra/run.sh.
+}

@@ -103,6 +103,34 @@ resource "aws_lambda_function" "cisa_kev" {
   depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
+data "archive_file" "otx_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../ingestion/otx/handler.py"
+  output_path = "${path.module}/../ingestion/build/otx.zip"
+}
+
+resource "aws_lambda_function" "otx" {
+  function_name = local.lambda_function_names.otx
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "handler.lambda_handler"
+  runtime       = "python3.12"
+  architectures = ["x86_64"]
+  # Up to MAX_PAGES sequential API calls, and pulses carry their indicators inline so
+  # the responses are large - see ingestion/otx/handler.py.
+  timeout          = 120
+  filename         = data.archive_file.otx_zip.output_path
+  source_code_hash = data.archive_file.otx_zip.output_base64sha256
+  layers           = [aws_lambda_layer_version.deps.arn]
+
+  environment {
+    variables = merge(local.ingestion_env_common, {
+      OTX_API_KEY = var.otx_api_key
+    })
+  }
+
+  depends_on = [aws_cloudwatch_log_group.lambda]
+}
+
 data "archive_file" "abuseipdb_enrich_zip" {
   type        = "zip"
   source_file = "${path.module}/../ingestion/abuseipdb_enrich/handler.py"

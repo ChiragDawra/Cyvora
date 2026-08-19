@@ -1,4 +1,4 @@
-# Schedules the 4 ingestion Lambdas and wires the landing bucket to auto-invoke the
+# Schedules the ingestion Lambdas and wires the landing bucket to auto-invoke the
 # normalizer on every new object.
 
 data "aws_iam_policy_document" "scheduler_assume_role" {
@@ -25,6 +25,7 @@ data "aws_iam_policy_document" "scheduler_invoke_lambda" {
       aws_lambda_function.cisa_kev.arn,
       aws_lambda_function.abuseipdb_enrich.arn,
       aws_lambda_function.anomaly_detector.arn,
+      aws_lambda_function.otx.arn,
     ]
   }
 }
@@ -108,6 +109,25 @@ resource "aws_scheduler_schedule" "abuseipdb_enrich" {
   }
 }
 
+# Pulses are curated by hand and edited over hours or days, not minutes, so daily is
+# plenty. It also bounds the landed-object volume, since each pull carries every
+# indicator of every subscribed pulse inline.
+resource "aws_scheduler_schedule" "otx" {
+  name       = "${var.project_name}-otx"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression = "rate(1 day)"
+
+  target {
+    arn      = aws_lambda_function.otx.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
+}
+
 # Runs once daily, after normalizer has had the whole day to accumulate counts in
 # _state/anomaly_counts.json (see ingestion/anomaly_detector/handler.py).
 resource "aws_scheduler_schedule" "anomaly_detector" {
@@ -134,7 +154,7 @@ resource "aws_s3_bucket_notification" "landing_triggers_normalizer" {
   bucket = aws_s3_bucket.landing.id
 
   dynamic "lambda_function" {
-    for_each = toset(["urlhaus/", "feodo/", "cisa_kev/"])
+    for_each = toset(["urlhaus/", "feodo/", "cisa_kev/", "otx/"])
 
     content {
       lambda_function_arn = aws_lambda_function.normalizer.arn
