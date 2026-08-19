@@ -1,6 +1,6 @@
 # Cyvora
 
-A live, self-hostable open-source-threat-intel aggregation and anomaly-flagging dashboard. Ingests free OSINT feeds (abuse.ch URLhaus/Feodo Tracker, CISA KEV, AbuseIPDB), normalizes them into a common IOC schema, and visualizes them on a globe/2D map — built primarily as a cloud/DevOps engineering showcase, with statistical anomaly detection as an honestly-scoped secondary layer.
+A live, self-hostable open-source-threat-intel aggregation and anomaly-flagging dashboard. Ingests free OSINT feeds (abuse.ch URLhaus/Feodo Tracker, CISA KEV, AlienVault OTX, AbuseIPDB), normalizes them into a common IOC schema, and visualizes them on a globe/2D map — built primarily as a cloud/DevOps engineering showcase, with statistical anomaly detection as an honestly-scoped secondary layer.
 
 **Start here:** [`EXECUTION_GUIDE.md`](./EXECUTION_GUIDE.md) — the live, checkbox-tracked build plan. It reconciles the two research docs below into one source of truth; where they conflict, the guide wins.
 
@@ -27,7 +27,8 @@ IOCs rarely have `geo` yet.
 EventBridge Scheduler                     ┌──────────────┐
   ├─ hourly ──▶ urlhaus  Lambda ──┐       │   Browser    │
   ├─ hourly ──▶ feodo    Lambda ──┤       └──────┬───────┘
-  └─ daily  ──▶ cisa_kev Lambda ──┤              │ HTTPS
+  ├─ daily  ──▶ cisa_kev Lambda ──┤              │ HTTPS
+  └─ daily  ──▶ otx      Lambda ──┤              │
                                   ▼              ▼
                         ┌──────────────┐  ┌──────────────┐
                         │  S3 landing  │  │  CloudFront  │
@@ -127,8 +128,14 @@ observed running with 18,000+ IOCs written to `cyvora-iocs`.
 SNS spike alerts backed by the `cyvora-alerts` table and `GET /alerts`, and the
 client-side DBSCAN Clusters view. The detector currently reports zero anomalies, which is
 correct — it needs 7 days of baseline history before it will flag anything, and the
-counter series only started accumulating recently. Remaining: an AlienVault OTX feed as a
-fourth source, which needs a free OTX API key and at least one subscribed pulse.
+counter series only started accumulating recently.
+
+The fourth item, the AlienVault OTX feed, is written and unit-tested but **not yet
+deployed**: it needs a free OTX API key in `.env` as `OTX_API_KEY`, and the account has
+to be subscribed to at least one pulse, since `/pulses/subscribed` returns only what it
+follows. Its parser follows OTX's documented v1 schema but — unlike the other three
+feeds, whose field names were transcribed from live authenticated responses — has not
+been checked against a real payload yet.
 
 See `EXECUTION_GUIDE.md` for the full checklist and `PHASE1_ISSUES.md` for the cost audit
 and verification commands.

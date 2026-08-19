@@ -125,10 +125,10 @@ Do this before writing any feature code.
 
 ## Phase 2 — v2 (optional stretch, only after v1 is fully done)
 
-- [ ] Statistical anomaly detection on per-category feed volume (PyOD or Prophet — not a from-scratch model)
-- [ ] SNS-based spike alerts (email or webhook) wired to the anomaly detector
-- [ ] DBSCAN or K-means clustering view over IOC attributes
-- [ ] Add **AlienVault OTX** feed for MITRE ATT&CK / target-industry context (requires a free key + subscribing to ≥1 pulse)
+- [x] Statistical anomaly detection on per-category feed volume — z-score over a rolling 30-day window, stdlib `statistics` rather than PyOD/Prophet: with one number per type per day there is nothing for a heavier library to add, and it keeps the Lambda layer unchanged. Counters live in S3, not DynamoDB, because the table has no spare provisioned capacity. Deployed; reports zero anomalies until 7 days of baseline accumulate, which is correct.
+- [x] SNS-based spike alerts wired to the anomaly detector — publishes to the existing `cyvora-alerts` topic (email, confirmed) and records each spike in the new `cyvora-alerts` table, served to the frontend via `GET /alerts`
+- [x] DBSCAN clustering view over IOC geo — runs client-side over the points the map already fetched, so no new Lambda, route, or table load. Hand-rolled in `frontend/src/lib/cluster.ts` rather than adding an npm dependency for one function.
+- [ ] Add **AlienVault OTX** feed for MITRE ATT&CK / target-industry context — puller, parser, and unit tests are written and green; Terraform for the Lambda + daily schedule is in place. **Not deployed yet**, and the parser has not been checked against a live payload: run `./run.sh apply`, confirm an `otx/*.json` object lands, then verify `_parse_otx`'s field names against it before trusting the data.
 
 ## Phase 3 — v3 (stretch, only if meaningfully ahead of schedule)
 
