@@ -130,12 +130,12 @@ client-side DBSCAN Clusters view. The detector currently reports zero anomalies,
 correct — it needs 7 days of baseline history before it will flag anything, and the
 counter series only started accumulating recently.
 
-The fourth item, the AlienVault OTX feed, is written and unit-tested but **not yet
-deployed**: it needs a free OTX API key in `.env` as `OTX_API_KEY`, and the account has
-to be subscribed to at least one pulse, since `/pulses/subscribed` returns only what it
-follows. Its parser follows OTX's documented v1 schema but — unlike the other three
-feeds, whose field names were transcribed from live authenticated responses — has not
-been checked against a real payload yet.
+**All four v2 items are now deployed.** The AlienVault OTX feed went live on 2026-08-19:
+its first pull landed 100 pulses / 2,816 indicators and wrote 2,568 unique IOCs, with no
+DynamoDB write throttling. Running it yourself needs a free OTX API key in `.env` as
+`OTX_API_KEY`, plus at least one subscribed pulse — `/pulses/subscribed` returns only
+what the account follows, so an unsubscribed account lands an empty payload without
+erroring.
 
 See `EXECUTION_GUIDE.md` for the full checklist and `PHASE1_ISSUES.md` for the cost audit
 and verification commands.

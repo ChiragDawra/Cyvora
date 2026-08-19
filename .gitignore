@@ -10,6 +10,7 @@
 
 # Local point-in-time feed downloads (not source, don't belong in git history)
 /known_exploited_vulnerabilities.json
+/otx_pulses.json
 
 # Node
 node_modules/

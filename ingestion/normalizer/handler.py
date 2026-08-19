@@ -13,9 +13,11 @@ Field names verified against live, authenticated responses (2026-07-26/27):
   so first_seen and last_seen are both set from it. `tags` can be JSON `null` (not
   just absent), handled by `entry.get("tags", []) or []`.
 
-`_parse_otx` is the exception: it follows OTX's documented DirectConnect v1 schema but
-has NOT been checked against a live authenticated payload, because no OTX key existed
-when it was written. Verify it against a real landed object before relying on it.
+- `_parse_otx`: confirmed exact against a live authenticated pull (2026-08-19) of 100
+  pulses / 2,816 indicators, parsed with zero failures. Pulses nest their indicators
+  under `indicators`; per-indicator fields are `indicator`, `type`, `created`, and the
+  pulse's own `modified` is the freshest thing known about it. Exactly one indicator in
+  that pull (a YARA rule) had no honest IOCType and was skipped, as intended.
 """
 from __future__ import annotations
 

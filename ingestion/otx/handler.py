@@ -12,10 +12,14 @@ normalizer has confirmed it wrote anything, so a normalization failure would sil
 drop those indicators for good. Full pulls plus the normalizer's watermark cost one
 extra S3 object and no extra DynamoDB writes.
 
-Field names below follow OTX's documented DirectConnect v1 schema but are NOT confirmed
-against a live authenticated response, unlike the other three feeds (see
-normalizer/handler.py's docstring). Verify against a real landed payload before trusting
-`_parse_otx`.
+Field names confirmed against a live authenticated pull on 2026-08-19: 100 pulses,
+2,816 indicators, 817 KB landed, parsed with zero failures.
+
+That pull returned exactly PAGE_SIZE * MAX_PAGES pulses, meaning the cap was reached and
+older subscribed pulses were left behind. That is the intended tradeoff - results come
+back most-recently-modified first, so what gets dropped is the stalest - but it does mean
+the feed is a recency window, not a complete mirror of everything the account follows.
+Raise MAX_PAGES if that stops being good enough, and watch the landed object size.
 """
 from __future__ import annotations
 
