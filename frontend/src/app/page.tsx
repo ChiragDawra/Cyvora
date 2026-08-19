@@ -15,18 +15,17 @@ const PLACEHOLDER_POINTS: IOCPoint[] = [
 
 export default function Home() {
   const [view, setView] = useState<"globe" | "2d" | "clusters">("globe");
-  const [points, setPoints] = useState<IOCPoint[]>([]);
-  const [usingPlaceholder, setUsingPlaceholder] = useState(false);
-  const [loading, setLoading] = useState(true);
+  // NEXT_PUBLIC_API_URL is baked in at build time (static export), so whether the API is
+  // configured is known before the first render - no need to mount empty and then set
+  // state from an effect, which only bought an extra render and a lint error.
+  const [points, setPoints] = useState<IOCPoint[]>(apiConfigured() ? [] : PLACEHOLDER_POINTS);
+  const [usingPlaceholder, setUsingPlaceholder] = useState(!apiConfigured());
+  const [loading, setLoading] = useState(apiConfigured());
   const [alerts, setAlerts] = useState<Alert[]>([]);
 
   useEffect(() => {
-    if (!apiConfigured()) {
-      setPoints(PLACEHOLDER_POINTS);
-      setUsingPlaceholder(true);
-      setLoading(false);
-      return;
-    }
+    if (!apiConfigured()) return;
+
     fetchIocPoints()
       .then((fetched) => {
         setPoints(fetched); // real data, even if empty - an empty map is a true state, not an error
