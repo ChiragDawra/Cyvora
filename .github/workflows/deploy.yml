@@ -8,7 +8,12 @@ name: Deploy
 #   Variable AWS_ROLE_ARN        - the github_actions_role_arn Terraform output
 #   Secret   ABUSECH_AUTH_KEY    - abuse.ch Auth-Key
 #   Secret   ABUSEIPDB_API_KEY   - AbuseIPDB API key
+#   Secret   OTX_API_KEY         - AlienVault OTX API key
 #   Secret   BUDGET_ALERT_EMAIL  - email for the Budgets and CloudWatch alarms
+#
+# Every TF_VAR_* below is a variable with no default in infra/variables.tf, so omitting
+# one fails the apply outright rather than degrading - keep this list and that file in
+# step when a feed is added.
 
 on:
   workflow_run:
@@ -61,6 +66,7 @@ jobs:
         env:
           TF_VAR_abusech_auth_key: ${{ secrets.ABUSECH_AUTH_KEY }}
           TF_VAR_abuseipdb_api_key: ${{ secrets.ABUSEIPDB_API_KEY }}
+          TF_VAR_otx_api_key: ${{ secrets.OTX_API_KEY }}
           TF_VAR_budget_alert_email: ${{ secrets.BUDGET_ALERT_EMAIL }}
         run: terraform apply -auto-approve
 
