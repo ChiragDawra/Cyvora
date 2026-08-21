@@ -5,7 +5,6 @@ TypeError on Decimal - so the handler returned 500 for every request until _json
 was added.
 """
 import json
-import os
 from decimal import Decimal
 
 import api.handler as api_handler
@@ -95,7 +94,6 @@ class _FakeAlertsTable:
 
 
 def test_get_alerts_route_returns_newest_first(monkeypatch):
-    os.environ["ALERTS_TABLE"] = "cyvora-alerts-test"
     items = [
         {"alert_id": "a", "created_at": 100},
         {"alert_id": "b", "created_at": 300},
@@ -114,7 +112,6 @@ def test_get_alerts_route_returns_newest_first(monkeypatch):
 
 
 def test_get_alerts_route_caps_at_alerts_limit(monkeypatch):
-    os.environ["ALERTS_TABLE"] = "cyvora-alerts-test"
     items = [{"alert_id": str(i), "created_at": i} for i in range(30)]
     monkeypatch.setattr(
         api_handler,
