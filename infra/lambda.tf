@@ -116,8 +116,14 @@ resource "aws_lambda_function" "otx" {
   runtime       = "python3.12"
   architectures = ["x86_64"]
   # Up to MAX_PAGES sequential API calls, and pulses carry their indicators inline so
-  # the responses are large - see ingestion/otx/handler.py.
-  timeout          = 120
+  # the responses are large - see ingestion/otx/handler.py. 120s was too tight: a single
+  # cold-cache page can take ~35s and its retry another 45s, so one slow page could eat
+  # the whole budget and the function got hard-killed mid-request, losing every page it
+  # had already fetched. The handler's own TIME_RESERVE_SECONDS check is what actually
+  # stops the paging; this is the outer bound it measures against, sized so a cold first
+  # page doesn't cost the run its remaining pages. Only real duration is billed, so a
+  # higher ceiling that is rarely reached costs nothing.
+  timeout          = 240
   filename         = data.archive_file.otx_zip.output_path
   source_code_hash = data.archive_file.otx_zip.output_base64sha256
   layers           = [aws_lambda_layer_version.deps.arn]

@@ -8,6 +8,7 @@ upstream field names.
 from collections import Counter
 
 import pytest
+import requests
 
 import otx.handler as otx_handler
 from common.schema import IOCType
@@ -126,6 +127,31 @@ def _page(count, has_next=True):
     return {"results": results, "next": "http://next" if has_next else None}
 
 
+def _http_error(status):
+    """A requests.HTTPError carrying a response, the way raise_for_status raises it -
+    _is_transient reads .response.status_code off it."""
+    response = requests.Response()
+    response.status_code = status
+    return requests.HTTPError(f"{status}", response=response)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleeping(monkeypatch):
+    """Retries back off for RETRY_BACKOFF_SECONDS; nothing here should actually wait."""
+    monkeypatch.setattr(otx_handler.time, "sleep", lambda seconds: None)
+
+
+class _Clock:
+    """Stands in for the Lambda context object, whose get_remaining_time_in_millis is the
+    only signal the handler has that it is about to be killed mid-request."""
+
+    def __init__(self, seconds_left):
+        self.seconds_left = seconds_left
+
+    def get_remaining_time_in_millis(self):
+        return self.seconds_left * 1000
+
+
 def test_fetch_pulses_follows_pages_until_a_short_one(monkeypatch):
     pages = [_page(otx_handler.PAGE_SIZE), _page(otx_handler.PAGE_SIZE), _page(3)]
     seen = []
@@ -136,10 +162,12 @@ def test_fetch_pulses_follows_pages_until_a_short_one(monkeypatch):
 
     monkeypatch.setattr(otx_handler.requests, "get", fake_get)
 
-    pulses = otx_handler._fetch_pulses("key")
+    pull = otx_handler._fetch_pulses("key")
 
     assert seen == [1, 2, 3]
-    assert len(pulses) == otx_handler.PAGE_SIZE * 2 + 3
+    assert len(pull.pulses) == otx_handler.PAGE_SIZE * 2 + 3
+    assert pull.pages_fetched == 3
+    assert pull.incomplete_reason is None
 
 
 def test_fetch_pulses_stops_when_next_is_null_even_on_a_full_page(monkeypatch):
@@ -148,7 +176,7 @@ def test_fetch_pulses_stops_when_next_is_null_even_on_a_full_page(monkeypatch):
 
     monkeypatch.setattr(otx_handler.requests, "get", fake_get)
 
-    assert len(otx_handler._fetch_pulses("key")) == otx_handler.PAGE_SIZE
+    assert len(otx_handler._fetch_pulses("key").pulses) == otx_handler.PAGE_SIZE
 
 
 def test_fetch_pulses_never_exceeds_the_page_cap(monkeypatch):
@@ -161,17 +189,17 @@ def test_fetch_pulses_never_exceeds_the_page_cap(monkeypatch):
 
     monkeypatch.setattr(otx_handler.requests, "get", fake_get)
 
-    pulses = otx_handler._fetch_pulses("key")
+    pull = otx_handler._fetch_pulses("key")
 
     assert len(calls) == otx_handler.MAX_PAGES
-    assert len(pulses) == otx_handler.PAGE_SIZE * otx_handler.MAX_PAGES
+    assert len(pull.pulses) == otx_handler.PAGE_SIZE * otx_handler.MAX_PAGES
 
 
 def test_fetch_pulses_sends_the_api_key_header(monkeypatch):
     captured = {}
 
     def fake_get(url, headers, params, timeout):
-        captured.update(url=url, headers=headers)
+        captured.update(url=url, headers=headers, timeout=timeout)
         return _FakeResponse(_page(0, has_next=False))
 
     monkeypatch.setattr(otx_handler.requests, "get", fake_get)
@@ -179,12 +207,114 @@ def test_fetch_pulses_sends_the_api_key_header(monkeypatch):
 
     assert captured["url"] == otx_handler.OTX_SUBSCRIBED_URL
     assert captured["headers"] == {"X-OTX-API-Key": "secret-key"}
+    # Split connect/read, not one scalar - a dead socket and a slow cache warrant
+    # very different patience. See the handler's timeout constants.
+    assert captured["timeout"] == (otx_handler.CONNECT_TIMEOUT, otx_handler.READ_TIMEOUT)
+
+
+def test_fetch_pulses_retries_a_read_timeout_and_succeeds(monkeypatch):
+    """The 2026-08-21 production failure: OTX's cache is cold, the first read times out
+    at ~34s, and that very request warms it so the retry returns in under 3s."""
+    attempts = []
+
+    def fake_get(url, headers, params, timeout):
+        attempts.append(params["page"])
+        if len(attempts) == 1:
+            raise requests.Timeout("read timed out")
+        return _FakeResponse(_page(2, has_next=False))
+
+    monkeypatch.setattr(otx_handler.requests, "get", fake_get)
+
+    pull = otx_handler._fetch_pulses("key")
+
+    assert attempts == [1, 1]  # same page, twice
+    assert len(pull.pulses) == 2
+    assert pull.incomplete_reason is None  # a retried success is a clean pull
+
+
+def test_fetch_pulses_retries_a_429_and_a_500_but_not_a_401(monkeypatch):
+    """A rate-limit or server fault may pass; a rejected API key will be just as rejected
+    a second later, so retrying it only burns the Lambda's time budget."""
+    for status, expected_attempts in [(429, 2), (503, 2), (401, 1)]:
+        attempts = []
+
+        def fake_get(url, headers, params, timeout, status=status):
+            attempts.append(1)
+            raise _http_error(status)
+
+        monkeypatch.setattr(otx_handler.requests, "get", fake_get)
+
+        with pytest.raises(requests.HTTPError):
+            otx_handler._fetch_pulses("key")
+
+        assert len(attempts) == expected_attempts, f"status {status}"
+
+
+def test_fetch_pulses_raises_when_the_very_first_page_never_arrives(monkeypatch):
+    """Nothing salvageable, so this must stay a hard failure - it is what makes the
+    cyvora-otx-errors alarm fire."""
+
+    def fake_get(url, headers, params, timeout):
+        raise requests.Timeout("read timed out")
+
+    monkeypatch.setattr(otx_handler.requests, "get", fake_get)
+
+    with pytest.raises(requests.Timeout):
+        otx_handler._fetch_pulses("key")
+
+
+def test_fetch_pulses_returns_what_it_has_when_a_later_page_fails(monkeypatch):
+    """Two good pages beat discarding both. The normalizer's watermark makes re-seeing
+    these indicators on the next run free, so a partial pull loses nothing."""
+
+    def fake_get(url, headers, params, timeout):
+        if params["page"] >= 3:
+            raise requests.ConnectionError("reset by peer")
+        return _FakeResponse(_page(otx_handler.PAGE_SIZE))
+
+    monkeypatch.setattr(otx_handler.requests, "get", fake_get)
+
+    pull = otx_handler._fetch_pulses("key")
+
+    assert pull.pages_fetched == 2
+    assert len(pull.pulses) == otx_handler.PAGE_SIZE * 2
+    assert "page 3" in pull.incomplete_reason
+
+
+def test_fetch_pulses_stops_paging_before_lambda_would_kill_it(monkeypatch):
+    """Being killed mid-request loses every page already fetched and logs no traceback,
+    which is strictly worse than stopping early and landing what we have."""
+    clock = _Clock(seconds_left=otx_handler.READ_TIMEOUT + otx_handler.TIME_RESERVE_SECONDS + 1)
+
+    def fake_get(url, headers, params, timeout):
+        clock.seconds_left -= 30  # each page eats into the deadline
+        return _FakeResponse(_page(otx_handler.PAGE_SIZE))
+
+    monkeypatch.setattr(otx_handler.requests, "get", fake_get)
+
+    pull = otx_handler._fetch_pulses("key", clock)
+
+    assert pull.pages_fetched == 1  # not MAX_PAGES
+    assert pull.incomplete_reason == "out of time before page 2"
+
+
+def test_fetch_pulses_ignores_the_clock_outside_lambda(monkeypatch):
+    """Local runs and tests pass no context; there is no deadline to respect."""
+
+    def fake_get(url, headers, params, timeout):
+        return _FakeResponse(_page(1, has_next=False))
+
+    monkeypatch.setattr(otx_handler.requests, "get", fake_get)
+
+    assert otx_handler._fetch_pulses("key", None).incomplete_reason is None
 
 
 def test_lambda_handler_wraps_pulses_and_reports_the_landed_key(monkeypatch):
     landed = {}
 
-    monkeypatch.setattr(otx_handler, "_fetch_pulses", lambda key: [{"id": "p1"}])
+    monkeypatch.setattr(
+        otx_handler, "_fetch_pulses", lambda key, context: otx_handler.Pull([{"id": "p1"}], 1, None)
+    )
     monkeypatch.setattr(
         otx_handler, "write_raw", lambda feed, payload: landed.update(feed=feed, payload=payload) or "otx/123.json"
     )
@@ -194,11 +324,61 @@ def test_lambda_handler_wraps_pulses_and_reports_the_landed_key(monkeypatch):
 
     assert landed["feed"] == "otx"
     assert landed["payload"] == {"pulses": [{"id": "p1"}]}
-    assert result == {"feed": "otx", "pulses": 1, "landed_key": "otx/123.json", "skipped_unchanged": False}
+    assert result == {
+        "feed": "otx",
+        "pulses": 1,
+        "pages_fetched": 1,
+        "partial": False,
+        "incomplete_reason": None,
+        "landed_key": "otx/123.json",
+        "skipped_unchanged": False,
+    }
+
+
+def test_lambda_handler_lands_a_partial_pull_and_says_so(monkeypatch):
+    landed = {}
+
+    monkeypatch.setattr(
+        otx_handler,
+        "_fetch_pulses",
+        lambda key, context: otx_handler.Pull([{"id": "p1"}], 2, "page 3: Timeout()"),
+    )
+    monkeypatch.setattr(otx_handler, "write_raw", lambda feed, payload: landed.update(payload=payload) or "otx/1.json")
+    monkeypatch.setenv("OTX_API_KEY", "k")
+
+    result = otx_handler.lambda_handler({}, None)
+
+    assert landed["payload"] == {"pulses": [{"id": "p1"}]}  # landed, not discarded
+    assert result["partial"] is True
+    assert result["incomplete_reason"] == "page 3: Timeout()"
+
+
+def test_lambda_handler_lands_a_genuinely_empty_subscription(monkeypatch):
+    """An account subscribed to no pulses is a no-op, not an error."""
+    monkeypatch.setattr(otx_handler, "_fetch_pulses", lambda key, context: otx_handler.Pull([], 1, None))
+    monkeypatch.setattr(otx_handler, "write_raw", lambda feed, payload: "otx/1.json")
+    monkeypatch.setenv("OTX_API_KEY", "k")
+
+    assert otx_handler.lambda_handler({}, None)["pulses"] == 0
+
+
+def test_lambda_handler_refuses_to_land_an_empty_pull_that_ran_out_of_time(monkeypatch):
+    """Otherwise a timed-out run overwrites a real feed with nothing and reports success -
+    the one failure mode the error alarm would never catch."""
+    monkeypatch.setattr(
+        otx_handler, "_fetch_pulses", lambda key, context: otx_handler.Pull([], 0, "out of time before page 1")
+    )
+    monkeypatch.setattr(
+        otx_handler, "write_raw", lambda feed, payload: pytest.fail("must not land an empty timed-out pull")
+    )
+    monkeypatch.setenv("OTX_API_KEY", "k")
+
+    with pytest.raises(RuntimeError, match="out of time"):
+        otx_handler.lambda_handler({}, None)
 
 
 def test_lambda_handler_reports_an_unchanged_payload_as_skipped(monkeypatch):
-    monkeypatch.setattr(otx_handler, "_fetch_pulses", lambda key: [])
+    monkeypatch.setattr(otx_handler, "_fetch_pulses", lambda key, context: otx_handler.Pull([{"id": "p"}], 1, None))
     monkeypatch.setattr(otx_handler, "write_raw", lambda feed, payload: None)
     monkeypatch.setenv("OTX_API_KEY", "k")
 
