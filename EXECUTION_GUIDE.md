@@ -46,6 +46,25 @@ Check off tasks as you finish them. Don't skip ahead to v2/v3 until v1's Definit
   verification (PHASE1_ISSUES.md X1), and observing the first live scheduled pipeline run
   (X2).
 
+- **2026-08-21:** First production incident, and it was worth having. The `cyvora-otx-errors`
+  alarm fired: three consecutive `ReadTimeout ... (read timeout=30)` on the daily pull.
+  Timing the same request by hand gave 34.3s, then 2.8s, then 0.6s for a byte-identical
+  response — OTX serves `/pulses/subscribed` from a cache a cold request has to populate,
+  so the first pull of the day is an order of magnitude slower than the rest, and the
+  request that times out is the one that warms it. That makes a retry unusually effective
+  here. Chasing it surfaced three more problems that had not yet fired:
+  `MAX_PAGES * 30s` was 150s against a 120s Lambda timeout, so a slow pull could be
+  hard-killed mid-request — which loses every page already fetched and logs no traceback
+  at all; a failure on page 3 discarded pages 1 and 2, when the normalizer's watermark
+  makes keeping them free; and **`deploy.yml` never passed `TF_VAR_otx_api_key`**, a
+  variable with no default, so every automatic apply on main since the OTX feed landed
+  would have failed. That last one hid behind the feed having been deployed by hand from
+  a local shell, where `run.sh` exports the key. `scripts/check_deploy_vars.py` now fails
+  CI on that whole class. Also measured while re-verifying: a full 5-page pull now takes
+  91s and returns 7,482 indicators, up from 2,816 on 2026-08-19 — the pages have grown
+  heavy enough that the old 120s ceiling would have silently dropped the last page even
+  with nothing timing out.
+
 ### Verifying the live pipeline
 
 Run these after the first hourly schedule fires (all read-only except the invoke):
@@ -106,7 +125,7 @@ Do this before writing any feature code.
 ### Backend & frontend
 - [x] **API Gateway + Lambda** backend serving IOC/alert data *(HTTP API + `cyvora-api` Lambda deployed, querying the GSI rather than scanning)*
 - [x] **React/Next.js** frontend, globe view via **globe.gl / react-globe.gl**, with a **2D map fallback (Leaflet)** — scaffolded and builds clean (`npm run build` passes) with placeholder points; not yet wired to the real API
-- [~] Deploy frontend via **S3 + CloudFront** *(bucket live, `scripts/deploy_frontend.sh` and the CI deploy job both written and wired to the Terraform outputs. **The distribution itself is blocked on AWS account verification** — a new-account restriction, not a config problem. See PHASE1_ISSUES.md X1)*
+- [x] Deploy frontend via **S3 + CloudFront** *(live at `d2w3ir83bk8ei4.cloudfront.net`. The distribution was blocked on AWS's new-account verification for a while — a restriction, not a config problem — and applied unchanged once cleared. See PHASE1_ISSUES.md X1)*
 
 ### Infra & ops
 - [x] All infra defined in **Terraform**, applied via CI *(60 of 61 resources live; only CloudFront is outstanding, blocked externally. State moved to S3 with native lockfile locking so CI can apply — no DynamoDB lock table, so no extra cost)*
@@ -115,10 +134,10 @@ Do this before writing any feature code.
 - [x] Confirm the **AWS Budgets alarm** from Phase 0 is actually active *(confirmed via `aws budgets describe-budget`: status HEALTHY, $5/month limit, $0 spend so far)*
 
 ### Definition of Done (v1)
-- [~] All 3 feeds ingesting on schedule with visible, correctly-plotted data on the map *(schedules live, feed logic verified against live data and covered by 20 tests; the deployed S3-write/DynamoDB-write path hasn't been observed running yet — see PHASE1_ISSUES.md X2 and the verification commands in the progress log)*
+- [x] All 3 feeds ingesting on schedule with visible, correctly-plotted data on the map *(observed end to end: 18,000+ IOCs in `cyvora-iocs`, and `GET /iocs?type=ip&geo=true` returns 100 geo-tagged points that render on both the globe and the 2D map)*
 - [x] 100% of infra provisioned through Terraform + CI/CD (no manual console changes) *(the one exception is the Terraform state bucket itself, created by `infra/bootstrap.sh` — a backend can't provision itself)*
-- [~] Publicly reachable URL (CloudFront), budget alarm confirmed active *(budget alarm confirmed HEALTHY; the CloudFront distribution is blocked on AWS account verification — PHASE1_ISSUES.md X1)*
-- [~] README updated with architecture diagram/summary + screenshots *(architecture written up; screenshots need the live URL)*
+- [x] Publicly reachable URL (CloudFront), budget alarm confirmed active *(both confirmed: the site is live at `d2w3ir83bk8ei4.cloudfront.net`, and `aws budgets describe-budget` reports HEALTHY)*
+- [x] README updated with architecture diagram/summary + screenshots *(architecture diagram covers all four feeds and the anomaly branch; globe and 2D map screenshots are in `docs/images/`)*
 - [x] No feature, copy, or label anywhere claims "prediction" or "attacker origin" — see Explicitly Out of Scope below
 
 ---

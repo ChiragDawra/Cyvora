@@ -119,23 +119,32 @@ scripts/      Frontend build-and-publish helper
 
 ## Status
 
-**v1 fully deployed and live.** All 61 Terraform resources are up: all three feeds on
-schedule, the S3 → normalizer → DynamoDB pipeline, the API, and both buckets. CloudFront
-cleared AWS's new-account verification and is serving the frontend; the pipeline has been
-observed running with 18,000+ IOCs written to `cyvora-iocs`.
+**v1 and v2 are both fully deployed and live.** Every resource is Terraform-managed:
+four feeds on schedule, the S3 to normalizer to DynamoDB pipeline, AbuseIPDB enrichment,
+the API, both buckets, and CloudFront serving the frontend at the URL above. The pipeline
+has been observed running with 18,000+ IOCs in `cyvora-iocs`.
 
-**v2 in progress.** Three of four items are deployed: the statistical anomaly detector,
-SNS spike alerts backed by the `cyvora-alerts` table and `GET /alerts`, and the
-client-side DBSCAN Clusters view. The detector currently reports zero anomalies, which is
-correct — it needs 7 days of baseline history before it will flag anything, and the
-counter series only started accumulating recently.
+v2 added the statistical anomaly detector, SNS spike alerts backed by the `cyvora-alerts`
+table and `GET /alerts`, the client-side DBSCAN Clusters view, and the AlienVault OTX
+feed. The detector reports zero anomalies so far, which is correct rather than broken —
+it needs 7 days of baseline before it will flag anything.
 
-**All four v2 items are now deployed.** The AlienVault OTX feed went live on 2026-08-19:
-its first pull landed 100 pulses / 2,816 indicators and wrote 2,568 unique IOCs, with no
-DynamoDB write throttling. Running it yourself needs a free OTX API key in `.env` as
-`OTX_API_KEY`, plus at least one subscribed pulse — `/pulses/subscribed` returns only
-what the account follows, so an unsubscribed account lands an empty payload without
-erroring.
+Running the OTX feed yourself needs a free OTX API key in `.env` as `OTX_API_KEY`, plus
+at least one subscribed pulse: `/pulses/subscribed` returns only what the account
+follows, so an unsubscribed account lands an empty payload without erroring.
+
+### Known operational characteristics
+
+- **OTX is a recency window, not a mirror.** Each pull is capped at `PAGE_SIZE *
+  MAX_PAGES` pulses, and OTX returns most-recently-modified first, so the oldest
+  subscribed pulses fall off the end.
+- **OTX's first request of the day is slow.** That endpoint is served from a cache a cold
+  request has to populate: measured at 34.3s, then 2.8s, then 0.6s for an identical
+  response. The puller retries, on the useful theory that the request which timed out is
+  the one that warmed the cache.
+- **Only IP IOCs get geo,** and only via the daily AbuseIPDB job capped at 400/day, so
+  new IOCs take a while to become plottable. This is why the map query asks for
+  `?geo=true` instead of simply taking the newest records.
 
 See `EXECUTION_GUIDE.md` for the full checklist and `PHASE1_ISSUES.md` for the cost audit
 and verification commands.

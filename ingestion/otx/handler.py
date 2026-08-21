@@ -19,7 +19,10 @@ That pull returned exactly PAGE_SIZE * MAX_PAGES pulses, meaning the cap was rea
 older subscribed pulses were left behind. That is the intended tradeoff - results come
 back most-recently-modified first, so what gets dropped is the stalest - but it does mean
 the feed is a recency window, not a complete mirror of everything the account follows.
-Raise MAX_PAGES if that stops being good enough, and watch the landed object size.
+Raise MAX_PAGES if that stops being good enough, and watch the landed object size: the
+same 100 pulses carried 2,816 indicators on 2026-08-19 and 7,482 on 2026-08-21, so the
+per-pulse weight moves a lot. That growth is a size and duration concern, not a DynamoDB
+one - the normalizer's watermark means a steady-state run writes almost none of it.
 
 Timeouts and retries exist because of a measured failure, not caution. On 2026-08-21 the
 daily run failed three times with `ReadTimeout ... (read timeout=30)`. Timing the same
