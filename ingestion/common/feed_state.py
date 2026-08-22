@@ -1,13 +1,15 @@
 """Tiny JSON state store on top of the landing bucket.
 
-Two pieces of per-feed state live here:
+Three kinds of state live here:
 
 - `<feed>.sha256` — hash of the last raw payload, so an unchanged feed doesn't get
   re-landed (see common/s3_landing.py).
 - `<feed>.watermark` — the newest source timestamp already written to DynamoDB, so the
   normalizer only writes genuinely new records (see normalizer/handler.py).
+- `anomaly_counts` — a rolling window of per-type daily write counts, appended by the
+  normalizer and read by anomaly_detector. Not per-feed, unlike the other two.
 
-Both live under `_state/`, which is deliberately NOT one of the feed prefixes wired to
+All live under `_state/`, which is deliberately NOT one of the feed prefixes wired to
 the normalizer in infra/eventbridge.tf — writing state must not re-trigger the pipeline.
 
 S3 rather than DynamoDB on purpose: these are a handful of sub-1KB objects read/written
