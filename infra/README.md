@@ -1,49 +1,85 @@
 # infra
 
-Terraform for all of Cyvora's v1 AWS resources. `terraform validate` and a full
-`terraform plan` (40 resources, 0 errors) have both been run against the real AWS
-provider — nothing has been `apply`'d beyond the Budgets alarm yet (see below for why).
+Terraform for every AWS resource Cyvora uses — **72 managed resources, all applied and
+live.** The only thing here that Terraform does not manage is the state bucket itself,
+created by `bootstrap.sh`, because a backend cannot provision itself.
 
 ## What's defined
-- `versions.tf` / `providers.tf` / `variables.tf` — provider + input variables
-- `s3.tf` — landing bucket (raw feed pulls) and frontend hosting bucket (both private, no public access)
-- `dynamodb.tf` — the IOC/alert store (`type-time-index` GSI, used by `backend/api/handler.py`'s queries)
-- `budgets.tf` — AWS Budgets cost alarm (80% actual, 100% forecasted) — **already applied, live**
-- `iam.tf` — shared Lambda execution role, scoped to just the landing bucket + IOC table (not account-wide)
-- `lambda.tf` — the 6 Lambda functions (urlhaus, feodo, cisa_kev, abuseipdb_enrich, normalizer, api) + the shared dependency layer
-- `eventbridge.tf` — schedules for the 4 ingestion Lambdas + the S3→normalizer trigger
-- `apigateway.tf` — HTTP API in front of the `api` Lambda (`GET /iocs`, `GET /iocs/{ioc_id}`)
-- `cloudfront.tf` — CDN in front of the frontend bucket (OAC-secured, bucket stays private) — this is what gives the project its public URL
-- `cloudwatch.tf` — an error-rate alarm per Lambda, emailing `budget_alert_email`
-- `outputs.tf`
 
-## Before running `terraform plan`/`apply`
-1. Build the Lambda dependency layer first — `lambda.tf`'s `archive_file` for the layer will fail with "could not archive missing directory" otherwise:
+| File | Contents |
+|---|---|
+| `versions.tf`, `providers.tf`, `variables.tf` | provider pins and input variables |
+| `backend.tf` | S3 remote state with native lockfile locking (`use_lockfile`) — no DynamoDB lock table, so no extra cost |
+| `s3.tf` | landing bucket (raw feed pulls, 7-day expiry) and frontend bucket — both private, no public access |
+| `dynamodb.tf` | `cyvora-iocs` (provisioned, `type-time-index` GSI, 90-day TTL) and `cyvora-alerts` (on-demand, 30-day TTL) |
+| `lambda.tf` | 8 functions — urlhaus, feodo, cisa_kev, otx, abuseipdb_enrich, normalizer, anomaly_detector, api — plus the shared dependency layer |
+| `eventbridge.tf` | 6 schedules (urlhaus/feodo hourly; cisa_kev, otx, abuseipdb_enrich, anomaly_detector daily) and the S3-to-normalizer trigger |
+| `apigateway.tf` | HTTP API in front of the `api` Lambda: `GET /iocs`, `GET /iocs/{ioc_id}`, `GET /alerts` |
+| `cloudfront.tf` | CDN in front of the frontend bucket, OAC-secured so the bucket stays private — this is what gives the project its public URL |
+| `cloudwatch.tf` | one dashboard, one error alarm per Lambda plus a DynamoDB throttle alarm (9 total), 7-day log retention, and the SNS alerts topic |
+| `iam.tf` | shared Lambda execution role, scoped to the landing bucket, the two tables and the SNS topic — not account-wide |
+| `github_oidc.tf` | the role GitHub Actions assumes to deploy, so no long-lived AWS keys exist in the repo |
+| `budgets.tf` | $5/month cost alarm at 80% actual and 100% forecasted |
+| `outputs.tf` | `api_url`, `cloudfront_domain`, `cloudfront_distribution_id`, bucket and role names |
+
+Two capacity ceilings shape several of these choices and are worth knowing before
+changing anything:
+
+- **DynamoDB's always-free 25 WCU / 25 RCU is account-wide, not per-table.** `cyvora-iocs`
+  holds 24 of 25 WCU and all 25 RCU. That is why `cyvora-alerts` is on-demand — there was
+  no provisioned capacity left to give it — and why per-feed state lives in S3 rather than
+  in a table. A new provisioned table will not fit.
+- **CloudWatch's always-free tier is 10 alarms.** 9 are in use, so exactly one more Lambda
+  can be added before alarms start costing money.
+
+## First-time setup
+
+1. Create `.env` in the repo root from `.env.example` and fill in the AWS credentials and
+   feed API keys. It is gitignored.
+2. Copy `terraform.tfvars.example` to `terraform.tfvars` and set `budget_alert_email`.
+   Also gitignored.
+3. Create the state bucket — one time, idempotent, safe to re-run:
+   ```
+   ./bootstrap.sh
+   ```
+4. Build the Lambda layer. `lambda.tf`'s `archive_file` reads the directory it produces,
+   so without this the plan fails with "could not archive missing directory":
    ```
    ../ingestion/build_layer.sh
    ```
-2. Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in `budget_alert_email` (gitignored)
-3. Use `./run.sh <command>` instead of calling `terraform` directly — it sources `../.env` and maps `ABUSECH_AUTH_KEY`/`ABUSEIPDB_API_KEY` to the `TF_VAR_*` names the Lambda env vars need:
+5. Use `./run.sh` rather than calling `terraform` directly — it sources `../.env` and maps
+   `ABUSECH_AUTH_KEY`, `ABUSEIPDB_API_KEY` and `OTX_API_KEY` to the `TF_VAR_*` names the
+   Lambda environment variables expect:
    ```
    ./run.sh plan
    ./run.sh apply
    ```
 
-## Applies must be run by you, not by the assistant
-The harness blocks `terraform apply -auto-approve` from running unattended (by design — it's a real, spend-affecting AWS change). Run `./run.sh apply` yourself; it'll show the plan and prompt for `yes`.
+## Deploying
 
-## After a successful apply
-- `terraform output` shows `api_url`, `cloudfront_domain`, and `cloudfront_distribution_id`
-- Rebuild the frontend with the real API URL baked in, then sync to S3 and invalidate CloudFront:
-  ```
-  cd ../frontend
-  NEXT_PUBLIC_API_URL=$(cd ../infra && terraform output -raw api_url) npm run build
-  aws s3 sync out/ s3://cyvora-frontend --delete
-  aws cloudfront create-invalidation --distribution-id $(cd ../infra && terraform output -raw cloudfront_distribution_id) --paths "/*"
-  ```
-- The Next.js app is statically exported (`next.config.ts`'s `output: "export"`) — there's no server, `NEXT_PUBLIC_API_URL` is baked in at build time, not read at runtime
+Pushing to `main` deploys: CI runs, and on success `.github/workflows/deploy.yml` applies
+this stack and publishes the frontend, authenticating through GitHub OIDC. That workflow
+needs `AWS_ROLE_ARN` as a repository variable and `ABUSECH_AUTH_KEY`, `ABUSEIPDB_API_KEY`,
+`OTX_API_KEY` and `BUDGET_ALERT_EMAIL` as repository secrets.
 
-## Known gaps / not yet automated
-- No CI/CD deploy job yet — needs AWS OIDC role + GitHub repo secrets, which is a manual GitHub-side setup step, not something the assistant can do
-- Geo coverage is partial by design: only Feodo Tracker IOCs (which include a `country` field directly) and AbuseIPDB-enriched IPs get plotted on the map. URLhaus URLs and CISA KEV CVEs have no inherent geography and are intentionally not force-mapped - see `ingestion/common/geo.py` and `EXECUTION_GUIDE.md`
-- `abuseipdb_enrich`'s `_get_unenriched_ips` uses a DynamoDB `scan` with a filter (no GSI exists for "missing an attribute") - fine at MVP scale, revisit if the table grows large
+Every variable without a default in `variables.tf` must be passed by that workflow, or the
+apply fails outright rather than degrading. `scripts/check_deploy_vars.py` enforces that in
+CI — it exists because `otx_api_key` was once missed, which broke automatic deploys while
+going unnoticed, since the feed had been applied by hand from a local shell.
+
+To deploy from your machine instead, `./run.sh apply` then `../scripts/deploy_frontend.sh`.
+Do not sync the frontend by hand: the API URL is baked in at build time (`next.config.ts`
+sets `output: "export"`, and Next.js inlines `NEXT_PUBLIC_*` during the build), so the
+order must always be apply, read outputs, build, sync, invalidate. The script does that in
+the right order and the deploy workflow inlines the same steps.
+
+## Notes on deliberate limitations
+
+- **Geo coverage is partial on purpose.** Only Feodo IOCs (which carry a `country` field)
+  and AbuseIPDB-enriched IPs get plotted. URLhaus URLs and CISA KEV CVEs have no inherent
+  geography and are not force-mapped — see `ingestion/common/geo.py` and the
+  attribution reframe in `EXECUTION_GUIDE.md`.
+- **`abuseipdb_enrich` scans with a filter** rather than querying an index, because no GSI
+  can express "missing an attribute". Fine at this scale; revisit if the table grows.
+- **The geo GSI is still deferred.** It needs a geohash scheme — DynamoDB has no native
+  geospatial index — and there is no spare provisioned capacity for one anyway.
