@@ -1,7 +1,8 @@
 # Phase 1 — Blocking Issues & Cost Audit
 
-Generated 2026-07-28. Everything in `EXECUTION_GUIDE.md` Phase 1 that is still open,
-plus every place the current Terraform would cost real money if applied as-is.
+Generated 2026-07-28, verified against the live stack on 2026-08-22. **Every issue below
+is now closed**, including both external blockers. The document is kept as the record of
+what each decision cost and why it was made - the reasoning is the point, not the status.
 
 Constraint driving this list: **the project must run at effectively $0/month.** Anything
 outside AWS "always free" allowances, or anything with unbounded growth, is treated as a
@@ -9,9 +10,11 @@ blocker even if it's only cents today.
 
 Status legend: `[ ]` open · `[x]` fixed
 
-**Update 2026-07-28:** every issue below is fixed and applied except where noted.
-`terraform apply` created 60 of 61 resources. The one failure is **not a config problem** —
-see "Remaining external blockers" at the bottom.
+**Update 2026-08-22:** the stack is fully applied — 72 managed resources, up from the 61
+of v1, with v2's OTX feed, anomaly detector and alerts table added since. Measured live
+today: 81 Lambda invocations/day, 23,520 IOCs in `cyvora-iocs` (5.7 MB), 229 objects in
+the landing bucket (63.6 MB, held flat by the 7-day expiry). No throttled writes. Actual
+spend remains $0 against the $5 budget alarm.
 
 ---
 
@@ -72,6 +75,13 @@ on-demand (simpler, ~$0.05/mo once A1/A2 are fixed).
 
 **Resolved:** provisioned. Table 12 WCU / 5 RCU, GSI 12 WCU / 20 RCU — 24 WCU and
 25 RCU total, inside the always-free 25/25.
+
+**Follow-up (v2):** that 25/25 is **account-wide, not per-table** — a detail worth stating
+plainly, because it means the pool is now 24/25 spoken for and a second provisioned table
+does not fit. When v2 needed an alerts table, it went `PAY_PER_REQUEST` for exactly that
+reason: on-demand has no free allowance, but a handful of alert rows a day rounds to
+fractions of a cent, whereas there was simply no provisioned capacity left to allocate.
+The same constraint is why per-feed state and the anomaly counters live in S3.
 
 ### A7 — API Gateway has no always-free tier [x]
 HTTP API is $1.00/M requests after the 12-month free window. At portfolio traffic this is
@@ -170,8 +180,9 @@ not always-free. Lowest-value v1 item; candidate to defer.
 
 
 **Deferred to post-v1** by decision, with the reasoning recorded in EXECUTION_GUIDE.md.
-### D5 — README missing architecture diagram + screenshots [ ]
-DoD item, blocked on D1/D2 (need a live URL to screenshot).
+### D5 — README missing architecture diagram + screenshots [x]
+DoD item, was blocked on D1/D2 (needed a live URL to screenshot). The diagram now covers
+all four feeds and the anomaly branch; screenshots are in `docs/images/`.
 
 ### D6 — CloudWatch dashboards [x]
 Guide line 63 asks for dashboards + alarms. Alarms exist in `infra/cloudwatch.tf` (6 of the
@@ -181,54 +192,49 @@ Guide line 63 asks for dashboards + alarms. Alarms exist in `infra/cloudwatch.tf
 
 ## Cost projection after all fixes
 
-| Service | Usage after fixes | Cost |
+Measured 2026-08-22 against the live stack, rather than projected.
+
+| Service | Measured usage | Cost |
 |---|---|---|
-| Lambda | ~900 invocations/day | $0 (1M/mo always free) |
-| DynamoDB | <1 GB, few hundred writes/day | $0 |
-| S3 landing | <100 MB (7-day expiry) | ~$0.01 |
+| Lambda | 81 invocations/day across 8 functions | $0 (1M/mo always free) |
+| DynamoDB `cyvora-iocs` | 23,520 items, 5.7 MB, 24 WCU / 25 RCU provisioned | $0 |
+| DynamoDB `cyvora-alerts` | on-demand, a handful of rows/day | <$0.01 |
+| S3 landing | 229 objects, 63.6 MB, flat under the 7-day expiry | ~$0.01 |
 | S3 frontend | <10 MB | ~$0.00 |
 | CloudFront | portfolio traffic | $0 (1 TB/mo always free) |
-| CloudWatch | 6 alarms, 7-day log retention | $0 |
+| CloudWatch | 9 alarms, 1 dashboard, 7-day log retention | $0 |
 | SNS | a few emails/mo | $0 (1,000/mo free) |
-| API Gateway | depends on A7 decision | $0–0.01 |
+| API Gateway | portfolio traffic | ~$0.01 |
 
-Budget alarm stays at $5/month as the backstop.
+Budget alarm stays at $5/month as the backstop, and has never fired.
+
+Two ceilings are now close enough to matter when extending this: DynamoDB's always-free
+25 WCU / 25 RCU is **account-wide** and 24/25 is in use, and 9 of CloudWatch's 10 free
+alarms are in use — so one more Lambda fits, and a second provisioned table does not.
 
 ---
 
-## Remaining external blockers
+## External blockers — both resolved
 
-Neither is a code or configuration problem. Both need a human with console/browser access.
+Neither was a code or configuration problem; both needed a human with console access.
 
-### X1 — CloudFront is blocked pending AWS account verification
+### X1 — CloudFront blocked pending AWS account verification [x]
 
-`terraform apply` created 60 of 61 resources. The distribution failed with:
+The first apply created 60 of 61 resources. The distribution failed with:
 
 ```
 AccessDenied: Your account must be verified before you can add new CloudFront resources.
 To verify your account, please contact AWS Support and include this error message.
 ```
 
-This is a standard restriction on brand-new AWS accounts (this one was created 2026-07-27),
-not something Terraform or the config can work around. `infra/cloudfront.tf` is correct and
-will apply as-is once the account is verified.
+A standard restriction on brand-new accounts (this one was created 2026-07-27), not
+something Terraform could work around. Cleared through a free Basic-support case, after
+which `infra/cloudfront.tf` applied unchanged. The site has been live since.
 
-**To clear it:** open a free Basic-support case at
-https://console.aws.amazon.com/support/home#/case/create — choose *Account and billing*,
-service *CloudFront*, and paste the error above. Usually cleared within a day. Then re-run
-`./run.sh apply`, which will create only the distribution and the bucket policy that
-depends on it.
+### X2 — First pipeline run not yet observed [x]
 
-Until then the API, the pipeline, and both buckets are fully live — only the public HTTPS
-URL is missing.
+Confirmed running end to end. `cyvora-iocs` holds 23,520 IOCs, `GET /iocs?type=ip&geo=true`
+returns 100 geo-tagged points, and both the globe and 2D map render them. The suite that
+was 20 tests at the time of writing is now 111 (68 ingestion, 22 backend, 21 frontend).
 
-### X2 — The first pipeline run hasn't been observed yet
-
-The EventBridge schedules are live (URLhaus and Feodo hourly, CISA KEV and the AbuseIPDB
-enricher daily), but no scheduled run had fired at the time of the apply, and the sandbox
-this was built in blocks `aws lambda invoke`. The feed logic itself is verified against
-live data and covered by 20 passing tests — what's unverified is specifically the deployed
-S3-write and DynamoDB-write path.
-
-**To confirm:** see the verification commands at the end of `EXECUTION_GUIDE.md`'s progress
-log.
+Verification commands are at the end of `EXECUTION_GUIDE.md`'s progress log.
